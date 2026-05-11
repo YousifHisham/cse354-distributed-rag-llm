@@ -1,140 +1,157 @@
 # Distributed RAG LLM Cluster
 
-Real multi-container distributed RAG and LLM inference system for the CSE 354 project.
+Multi-node distributed RAG and LLM inference system for CSE 354.
 
-The MacBook runs the master side: NGINX gateway, coordinator, Chroma vector database, Prometheus, and Grafana.
-Each Thunder Compute GPU node runs the worker side: Ollama on the GPU host plus one worker container that registers with the master and serves real model requests.
-
-## What Runs Where
-
-| Machine | Runs |
-| --- | --- |
-| MacBook master | NGINX, coordinator API, Chroma DB, Prometheus, Grafana |
-| GPU worker node | Docker, Ollama, pulled LLM model, worker container |
-
-The flow is:
-
-```text
-Client -> NGINX on MacBook -> Coordinator -> RAG with Chroma -> Best GPU worker -> Ollama -> Response
+```
+Client → NGINX (Mac) → Coordinator → Chroma RAG → Best GPU Worker → Ollama → Response
 ```
 
-## Master Setup: MacBook
+The Mac runs the master: NGINX gateway, coordinator, Chroma vector database, Prometheus, and Grafana.  
+Each Thunder Compute GPU node runs Ollama with the LLM model and a worker container that registers with the master.
 
-### 1. Install Requirements
+---
 
-Install Docker Desktop on the MacBook.
+## Part 1 — Mac (Master)
 
-You also need ngrok so the cloud GPU workers can reach the master:
+### Prerequisites
 
-```bash
-brew install ngrok/ngrok/ngrok
-```
+- Docker Desktop installed and running
+- ngrok installed: `brew install ngrok/ngrok/ngrok`
 
-### 2. Create Environment File
-
-From the project root:
+### Step 1 — Create your environment file
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and check these master values:
+No changes needed. The defaults work for the master.
 
-```env
-LB_STRATEGY=gpu_aware
-LLM_MODEL=llama3.2:8b
-WORKER_STALENESS_SECONDS=3
-HEARTBEAT_INTERVAL_SECONDS=0.5
-METRICS_INTERVAL_SECONDS=1
-```
+### Step 2 — Start ngrok
 
-The model name must match the model pulled on every GPU node.
-
-### 3. Start the Master Containers
-
-```bash
-docker compose up -d --build chroma control prometheus grafana
-```
-
-Check that the master is alive:
-
-```bash
-curl http://localhost/health
-```
-
-At this point `healthy_workers` can be `0`. That is normal until GPU workers connect.
-
-### 4. Start ngrok
-
-In another terminal:
+Open a **new terminal** and run:
 
 ```bash
 ngrok http 80
 ```
 
-Copy the HTTPS forwarding URL. It will look like:
+Leave this terminal open. Copy the HTTPS forwarding URL it shows, for example:
 
-```text
+```
 https://abc123.ngrok-free.app
 ```
 
-This URL is the `COORDINATOR_URL` that the GPU workers use.
+You will need this URL when setting up each GPU node.
 
-## Worker Setup: Thunder Compute GPU Node
+### Step 3 — Start the master
 
-### 1. Get the Project Onto the GPU Node
-
-SSH into the Thunder Compute node, then clone this repo after it is pushed:
+Back in your main terminal, from the project root:
 
 ```bash
-git clone <your-repo-url>
-cd <repo-folder>
+docker compose --profile master up --build -d
 ```
 
-If you are testing before the repo is pushed, copy the project folder to the GPU node instead.
+The first build takes 10–30 minutes because it downloads and installs `sentence-transformers` and its dependencies. Subsequent builds use the Docker cache and finish in seconds.
 
-### 2. Run the One-Command Worker Bootstrap
-
-Use the ngrok URL from the MacBook:
+### Step 4 — Confirm the master is running
 
 ```bash
-./scripts/bootstrap_gpu_node.sh https://abc123.ngrok-free.app gpu-worker-1 llama3.2:8b
+curl http://localhost/health
 ```
 
-The script will:
+Expected response:
 
-- install Docker if it is missing
-- install Ollama if it is missing
-- start the Ollama service
-- pull the selected model
-- build the worker Docker image
-- start the worker container
-- register the worker with the MacBook master
+```json
+{"status": "healthy", "healthy_workers": 0}
+```
 
-For a second GPU node, use a different name:
+`healthy_workers: 0` is normal. Workers will appear once GPU nodes connect.
+
+---
+
+## Part 2 — Thunder Compute GPU Node (Worker)
+
+Do these steps once per GPU node. SSH into the node first.
+
+### Step 1 — Clone the repo
 
 ```bash
-./scripts/bootstrap_gpu_node.sh https://abc123.ngrok-free.app gpu-worker-2 llama3.2:8b
+gh repo clone YousifHisham/cse354-distributed-rag-llm
+cd cse354-distributed-rag-llm
 ```
 
-If the worker cannot detect its reachable IP, pass it manually:
+### Step 2 — Install Ollama
 
 ```bash
-WORKER_HOST=<gpu-node-public-ip> ./scripts/bootstrap_gpu_node.sh https://abc123.ngrok-free.app gpu-worker-1 llama3.2:8b
+curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-## Verify Everything Works
+### Step 3 — Start Ollama in the background
 
-On the MacBook:
+Thunder Compute does not run systemd, so start Ollama manually:
+
+```bash
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+sleep 3
+```
+
+Confirm it is running:
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+You should get a JSON response. If you get "connection refused", wait a few more seconds and try again.
+
+### Step 4 — Pull the model
+
+```bash
+ollama pull llama3.1:8b
+```
+
+This downloads ~4.7 GB. It takes a few minutes depending on the node's network speed.
+
+### Step 5 — Start the worker
+
+```bash
+./scripts/start_worker.sh <ngrok HTTPS URL from the Mac> gpu-worker-1
+```
+
+For example:
+
+```bash
+./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-1
+```
+
+The script auto-detects this node's public IP, builds the worker image, and starts the container. No env file needed on the GPU node.
+
+The first build takes a few minutes. Subsequent builds are instant.
+
+### Step 6 — Confirm the worker registered
+
+From the **Mac**, run:
 
 ```bash
 curl http://localhost/health
 curl http://localhost/workers
 ```
 
-You should see the GPU worker registered and receiving heartbeats.
+`healthy_workers` should now be `1`. The `/workers` response lists the worker with its name, IP, and GPU stats.
 
-Send a real query:
+---
+
+## Adding a Second GPU Node
+
+Repeat Part 2 on the second node. In Step 5 use a different worker name:
+
+```bash
+./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-2
+```
+
+---
+
+## Send a Query
+
+Once at least one worker is registered:
 
 ```bash
 curl -X POST http://localhost/query \
@@ -142,115 +159,73 @@ curl -X POST http://localhost/query \
   -d '{"query": "What is distributed computing?"}'
 ```
 
-The response should include a `request_id`, selected `worker_id`, answer text, latency, and retry count.
+The response includes the answer, which worker handled it, latency, and retry count.
+
+---
+
+## Dashboards
+
+| Dashboard | URL | Default login |
+|---|---|---|
+| Grafana | http://localhost:3000 | admin / admin |
+| Prometheus | http://localhost:9090 | — |
+
+---
+
+## Stop Everything
+
+```bash
+# Mac
+docker compose --profile master down
+
+# GPU node
+docker compose --profile worker down
+```
+
+---
 
 ## Useful Debug Commands
 
-Master logs:
-
 ```bash
+# Master logs
 docker compose logs -f control
-```
 
-Worker logs on the GPU node:
+# Worker logs (on GPU node)
+docker compose --profile worker logs -f worker
 
-```bash
-docker logs -f gpu-worker-1
-```
-
-Check Ollama on the GPU node:
-
-```bash
+# Check what models are loaded on the GPU node
 ollama list
+
+# Check Ollama API directly
 curl http://localhost:11434/api/tags
-```
 
-Check registered workers from the MacBook:
-
-```bash
-curl http://localhost/workers
-```
-
-Change load-balancing strategy without restarting:
-
-```bash
+# Change load-balancing strategy without restarting
 curl -X POST http://localhost/config/strategy \
   -H "Content-Type: application/json" \
   -d '{"strategy": "gpu_aware"}'
 ```
 
-Valid strategies:
+Valid strategies: `least_tasks` · `lowest_resource` · `fastest_response` · `gpu_aware`
 
-- `least_tasks`
-- `lowest_resource`
-- `fastest_response`
-- `gpu_aware`
+---
 
 ## Load Tests
 
-Run one debuggable load test:
-
 ```bash
+# Single targeted test
 python3 scripts/load_generator.py \
   --url http://localhost \
   --users 100 \
   --requests 100 \
   --queries-file scripts/queries.txt \
   --out-dir results/manual \
-  --label gpu_aware_100 \
-  --verbose
-```
+  --label gpu_aware_100
 
-Run the full strategy comparison:
-
-```bash
+# Full strategy comparison
 USERS=500 REQUESTS=500 ./scripts/run_strategy_comparison.sh
-```
 
-Run the project evaluation suite:
-
-```bash
+# PDF evaluation suite
 ./scripts/run_pdf_evaluation.sh
 ```
 
-Results are written under `results/` with summaries, per-request JSONL files, errors, logs, health snapshots, worker snapshots, and Prometheus snapshots.
-
-## Dashboards
-
-Prometheus:
-
-```text
-http://localhost:9090
-```
-
-Grafana:
-
-```text
-http://localhost:3000
-```
-
-Default Grafana login:
-
-```text
-admin / admin
-```
-
-## Stop Everything
-
-Stop the master on the MacBook:
-
-```bash
-docker compose down
-```
-
-Stop a worker on a GPU node:
-
-```bash
-docker stop gpu-worker-1
-```
-
-Restart a worker:
-
-```bash
-docker start gpu-worker-1
-```
+Results are written under `results/` with per-request JSONL files, summaries, and Prometheus snapshots.
