@@ -179,7 +179,7 @@ The response includes the answer, which worker handled it, latency, and retry co
 docker compose --profile master down
 
 # GPU node
-docker compose --profile worker down
+kill $(cat /tmp/gpu-worker-1.pid)
 ```
 
 ---
@@ -191,7 +191,7 @@ docker compose --profile worker down
 docker compose logs -f control
 
 # Worker logs (on GPU node)
-docker compose --profile worker logs -f worker
+tail -f /tmp/gpu-worker-1.log
 
 # Check what models are loaded on the GPU node
 ollama list
@@ -209,23 +209,23 @@ Valid strategies: `least_tasks` · `lowest_resource` · `fastest_response` · `g
 
 ---
 
-## Load Tests
+## Testing
 
 ```bash
-# Single targeted test
-python3 scripts/load_generator.py \
-  --url http://localhost \
-  --users 100 \
-  --requests 100 \
-  --queries-file scripts/queries.txt \
-  --out-dir results/manual \
-  --label gpu_aware_100
+# Single query
+python3 scripts/query.py
+python3 scripts/query.py "What is the CAP theorem?"
+
+# Load test (fires all requests simultaneously)
+python3 scripts/load_test.py
+python3 scripts/load_test.py --requests 100 --strategy gpu_aware
+
+# Live cluster dashboard
+python3 scripts/watch.py
 
 # Full strategy comparison
-USERS=500 REQUESTS=500 ./scripts/run_strategy_comparison.sh
+./scripts/run_strategy_comparison.sh
 
 # PDF evaluation suite
 ./scripts/run_pdf_evaluation.sh
 ```
-
-Results are written under `results/` with per-request JSONL files, summaries, and Prometheus snapshots.

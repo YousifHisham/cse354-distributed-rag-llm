@@ -24,25 +24,6 @@ services:
       - chroma
     restart: unless-stopped
 
-  worker:
-    profiles: [worker]
-    build:
-      context: ./worker
-      dockerfile: Dockerfile
-    network_mode: host
-    environment:
-      - WORKER_NAME=${WORKER_NAME:-gpu-worker}
-      - WORKER_PORT=${WORKER_PORT:-8001}
-      - WORKER_HOST=${WORKER_HOST}
-      - COORDINATOR_URL=${COORDINATOR_URL}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
-      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
-      - HEARTBEAT_INTERVAL_SECONDS=${HEARTBEAT_INTERVAL_SECONDS:-0.5}
-      - METRICS_INTERVAL_SECONDS=${METRICS_INTERVAL_SECONDS:-1}
-      - REGISTRATION_RETRY_SECONDS=${REGISTRATION_RETRY_SECONDS:-2}
-      - LATENCY_WINDOW=${LATENCY_WINDOW:-20}
-    restart: unless-stopped
-
   prometheus:
     profiles: [master]
     image: prom/prometheus:v2.54.1
