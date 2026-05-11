@@ -28,7 +28,7 @@ echo "  Coordinator: $COORDINATOR_URL"
 echo ""
 
 echo "[worker] Building worker image..."
-docker build -t distributed-worker ./worker
+DOCKER_BUILDKIT=1 docker build -t distributed-worker ./worker
 
 if docker ps -a --format '{{.Names}}' | grep -Fxq "$WORKER_NAME"; then
   echo "[worker] Removing existing container: $WORKER_NAME"
