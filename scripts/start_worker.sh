@@ -27,8 +27,16 @@ echo "  Worker IP:   $WORKER_HOST"
 echo "  Coordinator: $COORDINATOR_URL"
 echo ""
 
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "[worker] Installing docker buildx..."
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL https://github.com/docker/buildx/releases/download/v0.17.0/buildx-v0.17.0.linux-amd64 \
+    -o /usr/local/lib/docker/cli-plugins/docker-buildx
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+fi
+
 echo "[worker] Building worker image..."
-DOCKER_BUILDKIT=1 docker build -t distributed-worker ./worker
+docker buildx build -t distributed-worker ./worker
 
 if docker ps -a --format '{{.Names}}' | grep -Fxq "$WORKER_NAME"; then
   echo "[worker] Removing existing container: $WORKER_NAME"
