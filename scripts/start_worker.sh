@@ -27,12 +27,37 @@ echo "  Worker IP:   $WORKER_HOST"
 echo "  Coordinator: $COORDINATOR_URL"
 echo ""
 
-export COORDINATOR_URL
-export WORKER_HOST
-export WORKER_NAME
+echo "[worker] Building worker image..."
+docker build -t distributed-worker ./worker
 
-docker compose --profile worker up --build -d
+if docker ps -a --format '{{.Names}}' | grep -Fxq "$WORKER_NAME"; then
+  echo "[worker] Removing existing container: $WORKER_NAME"
+  docker rm -f "$WORKER_NAME"
+fi
+
+echo "[worker] Starting container..."
+GPU_FLAGS=""
+if docker run --rm --gpus all hello-world >/dev/null 2>&1; then
+  GPU_FLAGS="--gpus all"
+fi
+
+docker run -d \
+  $GPU_FLAGS \
+  --network host \
+  --restart unless-stopped \
+  --name "$WORKER_NAME" \
+  -e WORKER_NAME="$WORKER_NAME" \
+  -e WORKER_HOST="$WORKER_HOST" \
+  -e COORDINATOR_URL="$COORDINATOR_URL" \
+  -e WORKER_PORT=8001 \
+  -e OLLAMA_BASE_URL=http://localhost:11434 \
+  -e LLM_MODEL=llama3.1:8b \
+  -e HEARTBEAT_INTERVAL_SECONDS=0.5 \
+  -e METRICS_INTERVAL_SECONDS=1 \
+  -e REGISTRATION_RETRY_SECONDS=2 \
+  -e LATENCY_WINDOW=20 \
+  distributed-worker
 
 echo ""
 echo "[worker] Done. Check logs with:"
-echo "  docker compose --profile worker logs -f worker"
+echo "  docker logs -f $WORKER_NAME"

@@ -118,33 +118,17 @@ run_load() {
   snapshot "before_${label}"
   log "Running load label=$label users=$users requests=$requests strategy=${strategy:-current}"
 
-  local verbose_args=()
-  if [[ "$VERBOSE_REQUESTS" == "true" ]]; then
-    verbose_args+=(--verbose)
-  fi
-
   local strategy_args=()
   if [[ -n "$strategy" ]]; then
     strategy_args+=(--strategy "$strategy")
   fi
 
-  local query_file_args=()
-  if [[ -n "${QUERIES_FILE:-}" ]]; then
-    query_file_args+=(--queries-file "$QUERIES_FILE")
-  fi
-
   set +e
-  python3 scripts/load_generator.py \
-    --url "$BASE_URL" \
-    --users "$users" \
+  python3 scripts/load_test.py \
     --requests "$requests" \
-    --timeout "$REQUEST_TIMEOUT" \
-    --query "$query" \
-    "${query_file_args[@]}" \
     --out-dir "$RESULTS_DIR" \
     --label "$label" \
     "${strategy_args[@]}" \
-    "${verbose_args[@]}" \
     2>&1 | tee -a "$RESULTS_DIR/run.log"
   local status=${PIPESTATUS[0]}
   set -e

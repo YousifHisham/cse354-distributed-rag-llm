@@ -31,7 +31,7 @@ services:
       dockerfile: Dockerfile
     network_mode: host
     environment:
-      - WORKER_NAME=${WORKER_NAME:-gpu-worker-1}
+      - WORKER_NAME=${WORKER_NAME:-gpu-worker}
       - WORKER_PORT=${WORKER_PORT:-8001}
       - WORKER_HOST=${WORKER_HOST}
       - COORDINATOR_URL=${COORDINATOR_URL}

@@ -75,7 +75,7 @@ Do these steps once per GPU node. SSH into the node first.
 ### Step 1 — Clone the repo
 
 ```bash
-gh repo clone YousifHisham/cse354-distributed-rag-llm
+git clone https://github.com/YousifHisham/cse354-distributed-rag-llm.git
 cd cse354-distributed-rag-llm
 ```
 

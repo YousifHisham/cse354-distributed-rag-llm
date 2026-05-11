@@ -61,10 +61,9 @@ WORKER_STALENESS_SECONDS = float(os.environ.get("WORKER_STALENESS_SECONDS", "30"
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "2"))
 MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", "5000"))
 REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "60"))
-LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.2:8b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
 KNOWLEDGE_DIR = os.environ.get("KNOWLEDGE_DIR", "/app/knowledge")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 CHROMA_HOST = os.environ.get("CHROMA_HOST", "chroma")
 CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
 CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "project_knowledge")
@@ -73,7 +72,6 @@ CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "project_knowledge")
 registry = WorkerRegistry()
 retriever = ChromaRetriever(
     KNOWLEDGE_DIR,
-    EMBEDDING_MODEL,
     CHROMA_HOST,
     CHROMA_PORT,
     CHROMA_COLLECTION,
@@ -180,7 +178,7 @@ async def _execute_job(job: QueuedJob) -> None:
 
     try:
         for attempt in range(MAX_RETRIES + 1):
-            workers = await registry.get_all_healthy(WORKER_STALENESS_SECONDS)
+            workers = await registry.get_all_healthy()
             eligible = [w for w in workers if w.worker_id not in failed_worker_ids]
 
             if not eligible:

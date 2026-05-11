@@ -50,7 +50,6 @@ class WorkerInfo(BaseModel):
     status: WorkerStatus = WorkerStatus.healthy
     last_metrics: Optional[WorkerMetrics] = None
     last_heartbeat: Optional[float] = None
-    last_metrics_at: Optional[float] = None
     assigned_tasks: int = 0
     registered_at: float
 

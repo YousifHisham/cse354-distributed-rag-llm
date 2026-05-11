@@ -171,15 +171,15 @@ def read_queries(query: str, queries_file: str | None, total: int) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Load test the distributed LLM coordinator.")
     parser.add_argument("--url", default="http://localhost", help="Coordinator/NGINX base URL")
-    parser.add_argument("--users", type=int, default=100, help="Concurrent users")
-    parser.add_argument("--requests", type=int, default=100, help="Total requests to send")
+    parser.add_argument("--users", type=int, default=10, help="Concurrent users")
+    parser.add_argument("--requests", type=int, default=50, help="Total requests to send")
     parser.add_argument("--query", default="What is distributed computing?", help="Query text")
-    parser.add_argument("--queries-file", help="Optional file containing one query per line")
+    parser.add_argument("--queries-file", default="scripts/queries.txt", help="File with one query per line")
     parser.add_argument("--timeout", type=float, default=180.0, help="Per-request timeout seconds")
     parser.add_argument("--strategy", help="Optional strategy to set before the run")
     parser.add_argument("--out-dir", default="results/manual", help="Directory for result files")
     parser.add_argument("--label", help="Result file label; default is strategy_users")
-    parser.add_argument("--verbose", action="store_true", help="Print one line per request")
+    parser.add_argument("--verbose", action="store_true", default=True, help="Print one line per request")
     args = parser.parse_args()
 
     base_url = args.url.rstrip("/")
@@ -223,7 +223,7 @@ def main() -> int:
     started = time.perf_counter()
     records: list[RequestRecord] = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.users) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.requests) as executor:
         futures = [
             executor.submit(
                 send_query,
@@ -283,10 +283,67 @@ def main() -> int:
         "errors_file": str(errors_path),
     }
     write_json(summary_path, summary)
-    print(json.dumps(summary, indent=2, sort_keys=True))
-    print(f"[load] summary saved to {summary_path}")
+
+    def ms(v: float) -> str:
+        return f"{v/1000:.2f}s"
+
+    print()
+    print("=" * 50)
+    print("  RESULTS")
+    print("=" * 50)
+    print(f"  Run timestamp    : {started_at}")
+    print(f"  Duration         : {elapsed:.2f}s")
+    print(f"  Total requests   : {args.requests}")
+    print(f"  Concurrency      : {args.users}")
+    print(f"  Timeout          : {args.timeout}s")
+    print(f"  Strategy         : {active_strategy}")
+    print()
+    print(f"  Successful       : {len(successes)}")
+    print(f"  Failed           : {len(failures)}")
+    print(f"  Success rate     : {100*len(successes)/args.requests:.1f}%")
+    print(f"  Throughput       : {summary['throughput_rps']} req/s")
+    print()
+    if latencies:
+        print(f"  Latency (success)")
+        print(f"    mean           : {ms(summary['avg_latency_ms'])}")
+        print(f"    p50            : {ms(summary['p50_latency_ms'])}")
+        print(f"    p95            : {ms(summary['p95_latency_ms'])}")
+        print(f"    p99            : {ms(summary['p99_latency_ms'])}")
+        print(f"    min            : {ms(summary['min_latency_ms'])}")
+        print(f"    max            : {ms(summary['max_latency_ms'])}")
+        print()
+    print("  Worker distribution")
+    for worker, count in sorted(by_worker.items(), key=lambda x: -x[1]):
+        print(f"    {worker}: {count}")
+    print()
+
     if failures:
-        print(f"[load] errors saved to {errors_path}", file=sys.stderr)
+        print("  Failed requests")
+        by_error: dict[str, int] = {}
+        for r in failures:
+            key = f"HTTP {r.status}" if r.status else (r.error or "unknown")
+            by_error[key] = by_error.get(key, 0) + 1
+        for err, count in sorted(by_error.items(), key=lambda x: -x[1]):
+            print(f"    {err}: {count}")
+        print()
+
+    if args.verbose and failures:
+        print("  Failed request details")
+        for r in failures:
+            print(
+                f"    [REQ {r.request_number:04d}] HTTP {r.status} "
+                f"{r.latency_ms/1000:.2f}s worker={r.worker_id or '-'} "
+                f"error={r.error or '-'} query={r.query[:60]!r}"
+            )
+        print()
+
+    print(f"  Per-request log  : {requests_path}")
+    if failures:
+        print(f"  Errors log       : {errors_path}")
+    print(f"  Summary JSON     : {summary_path}")
+    print("=" * 50)
+    print()
+
     return 0 if not failures else 1
 
 

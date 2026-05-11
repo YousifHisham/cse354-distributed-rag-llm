@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Optional
 
 from .models import WorkerHeartbeat, WorkerInfo, WorkerMetrics, WorkerStatus
 
@@ -64,12 +63,10 @@ class WorkerRegistry:
         async with self._lock:
             if worker_id not in self._workers:
                 return False
-            worker = self._workers[worker_id]
-            worker.last_metrics = metrics
-            worker.last_metrics_at = time.time()
+            self._workers[worker_id].last_metrics = metrics
             return True
 
-    async def get_all_healthy(self, staleness_seconds: float) -> list[WorkerInfo]:
+    async def get_all_healthy(self) -> list[WorkerInfo]:
         async with self._lock:
             return [
                 w for w in self._workers.values()
@@ -86,10 +83,6 @@ class WorkerRegistry:
             if worker_id in self._workers:
                 worker = self._workers[worker_id]
                 worker.assigned_tasks = max(0, worker.assigned_tasks - 1)
-
-    async def get_first_healthy(self, staleness_seconds: float) -> Optional[WorkerInfo]:
-        workers = await self.get_all_healthy(staleness_seconds)
-        return workers[0] if workers else None
 
     async def get_all(self) -> list[WorkerInfo]:
         async with self._lock:

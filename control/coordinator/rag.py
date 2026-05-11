@@ -13,13 +13,11 @@ class ChromaRetriever:
     def __init__(
         self,
         knowledge_dir: str,
-        embedding_model: str,
         chroma_host: str,
         chroma_port: int,
         collection_name: str,
     ) -> None:
         self._knowledge_dir = Path(knowledge_dir)
-        self._embedding_model_name = embedding_model
         self._chroma_host = chroma_host
         self._chroma_port = chroma_port
         self._collection_name = collection_name
@@ -29,14 +27,15 @@ class ChromaRetriever:
     def load(self) -> None:
         try:
             import chromadb
-            from sentence_transformers import SentenceTransformer
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
         except ImportError as exc:
             raise RuntimeError(f"Missing RAG dependency: {exc}") from exc
 
-        self._model = SentenceTransformer(self._embedding_model_name)
+        self._model = DefaultEmbeddingFunction()
         client = self._connect_chroma(chromadb)
         self._collection = client.get_or_create_collection(
             name=self._collection_name,
+            embedding_function=self._model,
             metadata={"description": "Distributed LLM project knowledge base"},
         )
 
@@ -61,11 +60,9 @@ class ChromaRetriever:
             logger.warning("[rag] No documents found in %s — RAG disabled", self._knowledge_dir)
             return
 
-        embeddings = self._model.encode(documents, convert_to_numpy=True).tolist()
         self._collection.upsert(
             ids=ids,
             documents=documents,
-            embeddings=embeddings,
             metadatas=metadatas,
         )
 
@@ -101,9 +98,8 @@ class ChromaRetriever:
         if self._collection is None or self._model is None:
             return ""
 
-        query_embedding = self._model.encode([query], convert_to_numpy=True).tolist()[0]
         results = self._collection.query(
-            query_embeddings=[query_embedding],
+            query_texts=[query],
             n_results=max(1, top_k),
             include=["documents", "metadatas"],
         )
