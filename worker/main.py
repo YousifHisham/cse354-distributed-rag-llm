@@ -28,11 +28,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WORKER_NAME: str = os.environ.get("WORKER_NAME", "gpu-worker")
+WORKER_NAME: str = os.environ.get("WORKER_NAME", "worker-1")
 WORKER_PORT: int = int(os.environ.get("WORKER_PORT", "8001"))
-WORKER_HOST: str = os.environ["WORKER_HOST"]
-WORKER_ADDRESS: str = os.environ.get("WORKER_ADDRESS", f"http://{os.environ['WORKER_HOST']}:{os.environ.get('WORKER_PORT', '8001')}")
-COORDINATOR_URL: str = os.environ["COORDINATOR_URL"]
+WORKER_HOST: str = os.environ.get("WORKER_HOST", WORKER_NAME)
+WORKER_ADDRESS: str = os.environ.get("WORKER_ADDRESS", f"http://{os.environ.get('WORKER_HOST', WORKER_NAME)}:{os.environ.get('WORKER_PORT', '8001')}")
+COORDINATOR_URL: str = os.environ.get("COORDINATOR_URL", "http://control:8000")
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "llama3.1:8b")
 METRICS_INTERVAL_SECONDS: float = float(os.environ.get("METRICS_INTERVAL_SECONDS", "1"))

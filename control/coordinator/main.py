@@ -79,7 +79,7 @@ retriever = ChromaRetriever(
 strategy: Strategy = get_strategy(LB_STRATEGY)
 strategy_lock = asyncio.Lock()
 active_requests: dict[str, Request] = {}
-job_queue: asyncio.Queue["QueuedJob"] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+job_queue: asyncio.PriorityQueue[tuple[float, str, "QueuedJob"]] = asyncio.PriorityQueue(maxsize=MAX_QUEUE_SIZE)
 _http_client: Optional[httpx.AsyncClient] = None
 _scheduler_task: Optional[asyncio.Task] = None
 
@@ -168,7 +168,7 @@ async def _staleness_checker() -> None:
 
 async def _scheduler_loop() -> None:
     while True:
-        job = await job_queue.get()
+        _, _, job = await job_queue.get()
         queue_depth.set(job_queue.qsize())
         asyncio.create_task(_execute_job(job))
 
@@ -446,7 +446,7 @@ async def handle_query(body: QueryBody):
     )
 
     try:
-        job_queue.put_nowait(job)
+        job_queue.put_nowait((created_at, request_id, job))
         queue_depth.set(job_queue.qsize())
     except asyncio.QueueFull as exc:
         requests_failed.inc()

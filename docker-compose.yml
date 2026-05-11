@@ -1,4 +1,6 @@
 services:
+
+  # ── Master ────────────────────────────────────────────────────
   chroma:
     profiles: [master]
     image: chromadb/chroma:0.5.23
@@ -10,6 +12,8 @@ services:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
+    networks:
+      - llmnet
 
   control:
     profiles: [master]
@@ -18,11 +22,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "80:80"
-      - "8000:8000"   # Exposed so Prometheus can scrape /prometheus directly
+      - "8000:8000"
     env_file: .env
     depends_on:
       - chroma
     restart: unless-stopped
+    networks:
+      - llmnet
 
   prometheus:
     profiles: [master]
@@ -39,6 +45,8 @@ services:
     depends_on:
       - control
     restart: unless-stopped
+    networks:
+      - llmnet
 
   grafana:
     profiles: [master]
@@ -56,6 +64,139 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+    networks:
+      - llmnet
+
+  # ── Workers (Mac containers → Thunder Compute Ollama) ─────────
+  worker-1:
+    profiles: [workers]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_NAME=worker-1
+      - WORKER_HOST=worker-1
+      - WORKER_PORT=8001
+      - COORDINATOR_URL=http://control:8000
+      - OLLAMA_BASE_URL=${THUNDER_COMPUTE_URL_1:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - HEARTBEAT_INTERVAL_SECONDS=0.5
+      - METRICS_INTERVAL_SECONDS=1
+      - REGISTRATION_RETRY_SECONDS=2
+      - LATENCY_WINDOW=20
+    depends_on:
+      - control
+    restart: unless-stopped
+    networks:
+      - llmnet
+
+  worker-2:
+    profiles: [workers]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_NAME=worker-2
+      - WORKER_HOST=worker-2
+      - WORKER_PORT=8001
+      - COORDINATOR_URL=http://control:8000
+      - OLLAMA_BASE_URL=${THUNDER_COMPUTE_URL_2:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - HEARTBEAT_INTERVAL_SECONDS=0.5
+      - METRICS_INTERVAL_SECONDS=1
+      - REGISTRATION_RETRY_SECONDS=2
+      - LATENCY_WINDOW=20
+    depends_on:
+      - control
+    restart: unless-stopped
+    networks:
+      - llmnet
+
+  worker-3:
+    profiles: [workers]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_NAME=worker-3
+      - WORKER_HOST=worker-3
+      - WORKER_PORT=8001
+      - COORDINATOR_URL=http://control:8000
+      - OLLAMA_BASE_URL=${THUNDER_COMPUTE_URL_3:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - HEARTBEAT_INTERVAL_SECONDS=0.5
+      - METRICS_INTERVAL_SECONDS=1
+      - REGISTRATION_RETRY_SECONDS=2
+      - LATENCY_WINDOW=20
+    depends_on:
+      - control
+    restart: unless-stopped
+    networks:
+      - llmnet
+
+  worker-4:
+    profiles: [workers]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_NAME=worker-4
+      - WORKER_HOST=worker-4
+      - WORKER_PORT=8001
+      - COORDINATOR_URL=http://control:8000
+      - OLLAMA_BASE_URL=${THUNDER_COMPUTE_URL_4:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - HEARTBEAT_INTERVAL_SECONDS=0.5
+      - METRICS_INTERVAL_SECONDS=1
+      - REGISTRATION_RETRY_SECONDS=2
+      - LATENCY_WINDOW=20
+    depends_on:
+      - control
+    restart: unless-stopped
+    networks:
+      - llmnet
+
+  worker-5:
+    profiles: [workers]
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - WORKER_NAME=worker-5
+      - WORKER_HOST=worker-5
+      - WORKER_PORT=8001
+      - COORDINATOR_URL=http://control:8000
+      - OLLAMA_BASE_URL=${THUNDER_COMPUTE_URL_5:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - HEARTBEAT_INTERVAL_SECONDS=0.5
+      - METRICS_INTERVAL_SECONDS=1
+      - REGISTRATION_RETRY_SECONDS=2
+      - LATENCY_WINDOW=20
+    depends_on:
+      - control
+    restart: unless-stopped
+    networks:
+      - llmnet
+
+  # ── Client ────────────────────────────────────────────────────
+  client:
+    profiles: [client]
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    environment:
+      - COORDINATOR_URL=http://control:80
+      - NUM_REQUESTS=${NUM_REQUESTS:-20}
+      - TIMEOUT=${TIMEOUT:-180}
+    depends_on:
+      - control
+    restart: "no"
+    networks:
+      - llmnet
+
+networks:
+  llmnet:
+    driver: bridge
 
 volumes:
   chroma-data:

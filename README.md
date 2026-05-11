@@ -3,220 +3,100 @@
 Multi-node distributed RAG and LLM inference system for CSE 354.
 
 ```
-Client → NGINX (Mac) → Coordinator → Chroma RAG → Best GPU Worker → Ollama → Response
+Client → NGINX (Mac) → Coordinator (Mac) → Worker-1..5 (Mac) → Ollama (Thunder Compute × 5)
 ```
 
-The Mac runs the master: NGINX gateway, coordinator, Chroma vector database, Prometheus, and Grafana.  
-Each Thunder Compute GPU node runs Ollama with the LLM model and a worker container that registers with the master.
+Everything runs on the Mac in Docker. Thunder Compute nodes run Ollama only.
+
+| Container | Role |
+|---|---|
+| `client` | One-shot request sender |
+| `control` | NGINX + coordinator + RAG + scheduler |
+| `chroma` | Vector database for RAG |
+| `worker-1..5` | Inference workers — each calls a remote Thunder Compute Ollama |
+| `prometheus` | Metrics collection |
+| `grafana` | Dashboards |
 
 ---
 
-## Part 1 — Mac (Master)
+## Setup
 
-### Prerequisites
+### Step 1 — Thunder Compute (one per instance, repeat 5 times)
 
-- Docker Desktop installed and running
-- ngrok installed: `brew install ngrok/ngrok/ngrok`
+SSH into each Thunder Compute node and run:
 
-### Step 1 — Create your environment file
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+sleep 3
+ollama pull llama3.1:8b
+```
+
+Note the public Ollama endpoint URL for each instance from your Thunder Compute dashboard (e.g. `https://abc123-11434.thundercompute.net`).
+
+### Step 2 — Mac
+
+**Create your env file:**
 
 ```bash
 cp .env.example .env
 ```
 
-No changes needed. The defaults work for the master.
+Edit `.env` and fill in the 5 Thunder Compute URLs:
 
-### Step 2 — Start ngrok
-
-Open a **new terminal** and run:
-
-```bash
-ngrok http 80
+```env
+THUNDER_COMPUTE_URL_1=https://instance1-11434.thundercompute.net
+THUNDER_COMPUTE_URL_2=https://instance2-11434.thundercompute.net
+THUNDER_COMPUTE_URL_3=https://instance3-11434.thundercompute.net
+THUNDER_COMPUTE_URL_4=https://instance4-11434.thundercompute.net
+THUNDER_COMPUTE_URL_5=https://instance5-11434.thundercompute.net
 ```
 
-Leave this terminal open. Copy the HTTPS forwarding URL it shows, for example:
-
-```
-https://abc123.ngrok-free.app
-```
-
-You will need this URL when setting up each GPU node.
-
-### Step 3 — Start the master
-
-Back in your main terminal, from the project root:
+**Start the master:**
 
 ```bash
 docker compose --profile master up --build -d
 ```
 
-The first build takes 10–30 minutes because it downloads and installs `sentence-transformers` and its dependencies. Subsequent builds use the Docker cache and finish in seconds.
+**Start the workers:**
 
-### Step 4 — Confirm the master is running
+```bash
+docker compose --profile workers up --build -d
+```
+
+**Confirm everything is up:**
 
 ```bash
 curl http://localhost/health
 ```
 
-Expected response:
-
-```json
-{"status": "healthy", "healthy_workers": 0}
-```
-
-`healthy_workers: 0` is normal. Workers will appear once GPU nodes connect.
+Expected: `{"status":"ok","healthy_workers":5,"total_workers":5}`
 
 ---
 
-## Part 2 — Thunder Compute GPU Node (Worker)
+## Run the Client
 
-Do these steps once per GPU node. SSH into the node first.
-
-### Step 1 — Clone the repo
+Fires 20 requests simultaneously, prints each answer and a summary:
 
 ```bash
-git clone https://github.com/YousifHisham/cse354-distributed-rag-llm.git
-cd cse354-distributed-rag-llm
+docker compose --profile client run --rm client
 ```
 
-### Step 2 — Install Ollama
+Change the number of requests:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+NUM_REQUESTS=50 docker compose --profile client run --rm client
 ```
-
-### Step 3 — Start Ollama in the background
-
-Thunder Compute does not run systemd, so start Ollama manually:
-
-```bash
-nohup ollama serve > /tmp/ollama.log 2>&1 &
-sleep 3
-```
-
-Confirm it is running:
-
-```bash
-curl http://localhost:11434/api/tags
-```
-
-You should get a JSON response. If you get "connection refused", wait a few more seconds and try again.
-
-### Step 4 — Pull the model
-
-```bash
-ollama pull llama3.1:8b
-```
-
-This downloads ~4.7 GB. It takes a few minutes depending on the node's network speed.
-
-### Step 5 — Start the worker
-
-```bash
-./scripts/start_worker.sh <ngrok HTTPS URL from the Mac> gpu-worker-1
-```
-
-For example:
-
-```bash
-./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-1
-```
-
-The script auto-detects this node's public IP, builds the worker image, and starts the container. No env file needed on the GPU node.
-
-The first build takes a few minutes. Subsequent builds are instant.
-
-### Step 6 — Confirm the worker registered
-
-From the **Mac**, run:
-
-```bash
-curl http://localhost/health
-curl http://localhost/workers
-```
-
-`healthy_workers` should now be `1`. The `/workers` response lists the worker with its name, IP, and GPU stats.
-
----
-
-## Adding a Second GPU Node
-
-Repeat Part 2 on the second node. In Step 5 use a different worker name:
-
-```bash
-./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-2
-```
-
----
-
-## Send a Query
-
-Once at least one worker is registered:
-
-```bash
-curl -X POST http://localhost/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is distributed computing?"}'
-```
-
-The response includes the answer, which worker handled it, latency, and retry count.
-
----
-
-## Dashboards
-
-| Dashboard | URL | Default login |
-|---|---|---|
-| Grafana | http://localhost:3000 | admin / admin |
-| Prometheus | http://localhost:9090 | — |
-
----
-
-## Stop Everything
-
-```bash
-# Mac
-docker compose --profile master down
-
-# GPU node
-kill $(cat /tmp/gpu-worker-1.pid)
-```
-
----
-
-## Useful Debug Commands
-
-```bash
-# Master logs
-docker compose logs -f control
-
-# Worker logs (on GPU node)
-tail -f /tmp/gpu-worker-1.log
-
-# Check what models are loaded on the GPU node
-ollama list
-
-# Check Ollama API directly
-curl http://localhost:11434/api/tags
-
-# Change load-balancing strategy without restarting
-curl -X POST http://localhost/config/strategy \
-  -H "Content-Type: application/json" \
-  -d '{"strategy": "gpu_aware"}'
-```
-
-Valid strategies: `least_tasks` · `lowest_resource` · `fastest_response` · `gpu_aware`
 
 ---
 
 ## Testing
 
 ```bash
-# Single query
+# Single query from terminal
 python3 scripts/query.py
-python3 scripts/query.py "What is the CAP theorem?"
 
-# Load test (fires all requests simultaneously)
+# Load test
 python3 scripts/load_test.py
 python3 scripts/load_test.py --requests 100 --strategy gpu_aware
 
@@ -229,3 +109,48 @@ python3 scripts/watch.py
 # PDF evaluation suite
 ./scripts/run_pdf_evaluation.sh
 ```
+
+---
+
+## Dashboards
+
+| Dashboard | URL | Login |
+|---|---|---|
+| Grafana | http://localhost:3000 | admin / admin |
+| Prometheus | http://localhost:9090 | — |
+
+---
+
+## Stop Everything
+
+```bash
+docker compose --profile master --profile workers down
+```
+
+---
+
+## Useful Debug Commands
+
+```bash
+# All container status
+docker compose ps
+
+# Coordinator logs
+docker compose logs -f control
+
+# Worker logs
+docker compose logs -f worker-1
+
+# Check registered workers
+curl http://localhost/workers
+
+# Check queue and strategy
+curl http://localhost/debug/state
+
+# Change load-balancing strategy live
+curl -X POST http://localhost/config/strategy \
+  -H "Content-Type: application/json" \
+  -d '{"strategy": "gpu_aware"}'
+```
+
+Valid strategies: `least_tasks` · `lowest_resource` · `fastest_response` · `gpu_aware`
