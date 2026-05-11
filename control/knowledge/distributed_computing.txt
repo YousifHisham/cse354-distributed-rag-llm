@@ -1,0 +1,13 @@
+Distributed computing is a field of computer science that studies systems whose components are located on different networked computers, which communicate and coordinate their actions by passing messages. The components interact with each other to achieve a common goal.
+
+A distributed system is a collection of independent computers that appears to its users as a single coherent system. Key characteristics include concurrency of components, lack of a global clock, and independent failure of components.
+
+Load balancing is a technique used in distributed systems to distribute work across multiple computing resources. Common strategies include round-robin (cycling requests across nodes in order), least-connections (routing to the node with the fewest active connections), and resource-aware routing (routing based on CPU or memory utilization).
+
+Fault tolerance is the property that enables a system to continue operating properly in the event of the failure of one or more of its components. In distributed systems, fault tolerance is achieved through redundancy, replication, and automatic failover mechanisms.
+
+The CAP theorem states that a distributed data store can only guarantee two of the following three properties simultaneously: Consistency, Availability, and Partition tolerance. Most modern distributed systems choose to sacrifice consistency in favor of availability and partition tolerance.
+
+Message passing is the primary communication paradigm in distributed systems. Processes communicate by sending messages to each other rather than sharing memory. This decouples components and allows them to run on separate machines.
+
+A coordinator or master node in a distributed system is responsible for orchestrating tasks across worker nodes, maintaining system state, detecting failures, and redistributing work when nodes become unavailable.

@@ -1,0 +1,13 @@
+Large Language Models (LLMs) are deep learning models trained on massive amounts of text data that can generate human-like text, answer questions, summarize documents, and perform many other natural language tasks.
+
+LLM inference refers to the process of running a trained language model to generate responses to input prompts. Inference is computationally intensive and typically requires GPU hardware to achieve acceptable response times.
+
+Ollama is an open-source tool that makes it easy to run large language models locally. It provides a simple HTTP API for running models like Llama, Mistral, and others. The API accepts prompts and returns generated text. When called with stream=false, it returns the complete response in a single HTTP response.
+
+GPU (Graphics Processing Unit) acceleration dramatically speeds up LLM inference because neural network computations are highly parallelizable and GPUs are optimized for matrix operations. Running LLMs on CPU is possible but significantly slower.
+
+Prompt engineering is the practice of crafting input prompts to guide LLM behavior. A well-structured prompt can significantly improve response quality. Common patterns include providing context before the question, using delimiters to separate sections, and specifying the desired format of the response.
+
+Retrieval-Augmented Generation (RAG) combines LLM inference with information retrieval. Before generating a response, relevant documents are retrieved from a knowledge base and included in the prompt as context. This allows the model to answer questions based on specific, up-to-date information rather than relying solely on its training data.
+
+Latency in LLM inference is the time from when a request is submitted to when the complete response is received. Factors affecting latency include model size, hardware speed, prompt length, and response length. Throughput measures how many requests per second the system can handle.

@@ -1,0 +1,13 @@
+Retrieval-Augmented Generation (RAG) is a technique that enhances language model responses by first retrieving relevant information from a knowledge base and including it in the prompt. This approach improves accuracy, reduces hallucinations, and allows the model to answer questions about specific documents or domain knowledge.
+
+Vector embeddings are numerical representations of text that capture semantic meaning. Similar texts have embeddings that are close together in vector space. Sentence transformers are a class of models that produce high-quality sentence embeddings suitable for semantic search and clustering.
+
+ChromaDB is a vector database used to store document embeddings and perform semantic similarity search. Running Chroma as a separate service makes the vector store independent from the coordinator, allows the index to persist across coordinator restarts, and makes the RAG database easier to inspect during deployment and demos.
+
+The RAG pipeline works as follows: documents in the knowledge base are split into chunks, converted to embeddings, and upserted into a Chroma collection at startup. When a query arrives, it is converted to an embedding using the same model. Chroma searches for the most similar document chunks. The corresponding passages are retrieved and prepended to the query as context before being sent to the language model.
+
+Cosine similarity and L2 distance are two common metrics used to measure the similarity between vectors. Similarity search allows the system to find passages that are semantically related to the query even when the exact same words are not used.
+
+Top-k retrieval means fetching the k most similar documents for a given query. Choosing k involves a trade-off: larger k provides more context but also increases prompt length, which can slow down LLM inference and may introduce irrelevant information.
+
+Knowledge base indexing happens at system startup. Documents are read from a directory, embedded using a sentence transformer model, and stored in Chroma. The coordinator then queries Chroma for relevant context during each user request.
