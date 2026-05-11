@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 WORKER_NAME: str = os.environ.get("WORKER_NAME", "gpu-worker")
 WORKER_PORT: int = int(os.environ.get("WORKER_PORT", "8001"))
 WORKER_HOST: str = os.environ["WORKER_HOST"]
+WORKER_ADDRESS: str = os.environ.get("WORKER_ADDRESS", f"http://{os.environ['WORKER_HOST']}:{os.environ.get('WORKER_PORT', '8001')}")
 COORDINATOR_URL: str = os.environ["COORDINATOR_URL"]
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "llama3.1:8b")
@@ -83,7 +84,7 @@ def _collect_gpu_snapshot() -> dict[str, float]:
 async def _register() -> None:
     global ASSIGNED_WORKER_ID
     body = WorkerRegistration(
-        address=f"http://{WORKER_HOST}:{WORKER_PORT}",
+        address=WORKER_ADDRESS,
         name=WORKER_NAME,
         model=LLM_MODEL,
     ).model_dump()

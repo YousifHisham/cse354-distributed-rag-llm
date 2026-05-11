@@ -3,13 +3,17 @@ set -euo pipefail
 
 COORDINATOR_URL="${1:-}"
 WORKER_NAME="${2:-gpu-worker-1}"
+WORKER_PUBLIC_URL="${3:-}"
 
 if [[ -z "$COORDINATOR_URL" ]]; then
-  echo "Usage: ./scripts/start_worker.sh <coordinator_url> [worker_name]"
+  echo "Usage: ./scripts/start_worker.sh <coordinator_url> [worker_name] [worker_public_url]"
   echo ""
-  echo "Example:"
-  echo "  ./scripts/start_worker.sh https://abc123.ngrok-free.app"
-  echo "  ./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-2"
+  echo "Examples:"
+  echo "  # Port 8001 is publicly reachable:"
+  echo "  ./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-1"
+  echo ""
+  echo "  # Port 8001 is firewalled — expose via ngrok first, then:"
+  echo "  ./scripts/start_worker.sh https://abc123.ngrok-free.app gpu-worker-1 https://xyz.ngrok-free.app"
   exit 1
 fi
 
@@ -33,6 +37,7 @@ pip install -q -r worker/requirements.txt
 export WORKER_NAME="$WORKER_NAME"
 export WORKER_HOST="$WORKER_HOST"
 export COORDINATOR_URL="$COORDINATOR_URL"
+export WORKER_ADDRESS="${WORKER_PUBLIC_URL:-http://${WORKER_HOST}:8001}"
 export WORKER_PORT=8001
 export OLLAMA_BASE_URL=http://localhost:11434
 export LLM_MODEL=llama3.1:8b
