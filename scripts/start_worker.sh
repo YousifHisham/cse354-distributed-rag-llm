@@ -44,7 +44,8 @@ export LATENCY_WINDOW=20
 LOG_FILE="/tmp/${WORKER_NAME}.log"
 echo "[worker] Starting worker (logs: $LOG_FILE)..."
 
-PYTHONPATH="$(pwd)" nohup python3 -m uvicorn worker.main:app \
+cd worker
+nohup python3 -m uvicorn main:app \
   --host 0.0.0.0 \
   --port "$WORKER_PORT" \
   --log-level info \
