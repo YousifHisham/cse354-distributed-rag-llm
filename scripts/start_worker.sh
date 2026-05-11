@@ -27,45 +27,38 @@ echo "  Worker IP:   $WORKER_HOST"
 echo "  Coordinator: $COORDINATOR_URL"
 echo ""
 
-if ! docker buildx version >/dev/null 2>&1; then
-  echo "[worker] Installing docker buildx..."
-  mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -fsSL https://github.com/docker/buildx/releases/download/v0.17.0/buildx-v0.17.0.linux-amd64 \
-    -o /usr/local/lib/docker/cli-plugins/docker-buildx
-  chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+echo "[worker] Installing Python dependencies..."
+pip install -q -r worker/requirements.txt
+
+export WORKER_NAME="$WORKER_NAME"
+export WORKER_HOST="$WORKER_HOST"
+export COORDINATOR_URL="$COORDINATOR_URL"
+export WORKER_PORT=8001
+export OLLAMA_BASE_URL=http://localhost:11434
+export LLM_MODEL=llama3.1:8b
+export HEARTBEAT_INTERVAL_SECONDS=0.5
+export METRICS_INTERVAL_SECONDS=1
+export REGISTRATION_RETRY_SECONDS=2
+export LATENCY_WINDOW=20
+
+LOG_FILE="/tmp/${WORKER_NAME}.log"
+echo "[worker] Starting worker (logs: $LOG_FILE)..."
+
+PYTHONPATH="$(pwd)" nohup python3 -m uvicorn worker.main:app \
+  --host 0.0.0.0 \
+  --port "$WORKER_PORT" \
+  --log-level info \
+  > "$LOG_FILE" 2>&1 &
+
+echo $! > "/tmp/${WORKER_NAME}.pid"
+sleep 2
+
+if kill -0 "$(cat /tmp/${WORKER_NAME}.pid)" 2>/dev/null; then
+  echo ""
+  echo "[worker] Done. Worker is running."
+  echo "  Logs : tail -f $LOG_FILE"
+  echo "  Stop : kill \$(cat /tmp/${WORKER_NAME}.pid)"
+else
+  echo "ERROR: Worker failed to start. Check logs: $LOG_FILE"
+  exit 1
 fi
-
-echo "[worker] Building worker image..."
-docker buildx build -t distributed-worker ./worker
-
-if docker ps -a --format '{{.Names}}' | grep -Fxq "$WORKER_NAME"; then
-  echo "[worker] Removing existing container: $WORKER_NAME"
-  docker rm -f "$WORKER_NAME"
-fi
-
-echo "[worker] Starting container..."
-GPU_FLAGS=""
-if docker run --rm --gpus all hello-world >/dev/null 2>&1; then
-  GPU_FLAGS="--gpus all"
-fi
-
-docker run -d \
-  $GPU_FLAGS \
-  --network host \
-  --restart unless-stopped \
-  --name "$WORKER_NAME" \
-  -e WORKER_NAME="$WORKER_NAME" \
-  -e WORKER_HOST="$WORKER_HOST" \
-  -e COORDINATOR_URL="$COORDINATOR_URL" \
-  -e WORKER_PORT=8001 \
-  -e OLLAMA_BASE_URL=http://localhost:11434 \
-  -e LLM_MODEL=llama3.1:8b \
-  -e HEARTBEAT_INTERVAL_SECONDS=0.5 \
-  -e METRICS_INTERVAL_SECONDS=1 \
-  -e REGISTRATION_RETRY_SECONDS=2 \
-  -e LATENCY_WINDOW=20 \
-  distributed-worker
-
-echo ""
-echo "[worker] Done. Check logs with:"
-echo "  docker logs -f $WORKER_NAME"
