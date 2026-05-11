@@ -110,7 +110,7 @@ else
 fi
 
 echo "[gpu-node] Starting Ollama service..."
-if command -v systemctl >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
   sudo systemctl enable ollama >/dev/null 2>&1 || true
   sudo systemctl restart ollama >/dev/null 2>&1 || true
 else
