@@ -13,7 +13,7 @@ if [[ -z "$COORDINATOR_URL" ]]; then
   exit 1
 fi
 
-if [[ ! -f "worker/Dockerfile" ]]; then
+if [[ ! -f "worker/main.py" ]]; then
   echo "ERROR: run this script from the project root."
   exit 1
 fi
