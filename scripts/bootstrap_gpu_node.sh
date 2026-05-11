@@ -7,7 +7,7 @@ Usage:
   ./scripts/bootstrap_gpu_node.sh <coordinator_url> [worker_name] [model]
 
 Example:
-  ./scripts/bootstrap_gpu_node.sh https://abc123.ngrok-free.app gpu-a6000-1 llama3.2:8b
+  ./scripts/bootstrap_gpu_node.sh https://abc123.ngrok-free.app gpu-a6000-1 llama3.1:8b
 
 Environment overrides:
   COORDINATOR_URL             Public control-plane URL, usually your ngrok URL
@@ -36,7 +36,7 @@ fi
 
 COORDINATOR_URL="${1:-${COORDINATOR_URL:-}}"
 WORKER_NAME="${2:-${WORKER_NAME:-gpu-worker}}"
-LLM_MODEL="${3:-${LLM_MODEL:-llama3.2:8b}}"
+LLM_MODEL="${3:-${LLM_MODEL:-llama3.1:8b}}"
 WORKER_PORT="${WORKER_PORT:-8001}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
 WORKER_IMAGE="${WORKER_IMAGE:-distributed-worker}"
@@ -101,6 +101,11 @@ install_docker_if_needed() {
 }
 
 install_docker_if_needed
+
+if ! command -v lspci >/dev/null 2>&1; then
+  echo "[gpu-node] Installing lspci for GPU detection..."
+  sudo apt-get install -y -qq pciutils
+fi
 
 if ! command -v ollama >/dev/null 2>&1; then
   echo "[gpu-node] Installing Ollama..."
