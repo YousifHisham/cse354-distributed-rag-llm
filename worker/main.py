@@ -34,6 +34,7 @@ WORKER_ADDRESS            = os.environ.get("WORKER_ADDRESS", f"http://{os.enviro
 COORDINATOR_URL           = os.environ.get("COORDINATOR_URL", "http://control:8000")
 OLLAMA_BASE_URL           = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_SSL_VERIFY         = os.environ.get("OLLAMA_SSL_VERIFY", "true").lower() != "false"
+THUNDER_METRICS_URL       = os.environ.get("THUNDER_METRICS_URL", "")  # optional
 LLM_MODEL                 = os.environ.get("LLM_MODEL", "llama3.1:8b")
 METRICS_INTERVAL_SECONDS  = float(os.environ.get("METRICS_INTERVAL_SECONDS", "1"))
 HEARTBEAT_INTERVAL_SECONDS= float(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "0.5"))
@@ -56,19 +57,40 @@ _shutdown: bool = False
 _http_client: httpx.AsyncClient | None = None
 
 
-# ── Ollama GPU metrics ────────────────────────────────────────────────────────
-async def _poll_ollama_gpu() -> None:
-    """Poll Ollama /api/ps for VRAM usage of the loaded model."""
-    global _vram_used_gb, _vram_total_gb
+# ── GPU metrics ───────────────────────────────────────────────────────────────
+_gpu_temperature_c: float = 0.0
+
+
+async def _poll_gpu_metrics() -> None:
+    """
+    If THUNDER_METRICS_URL is set, poll the thunder_metrics.py server running
+    on the Thunder Compute node for real nvidia-smi stats.
+    Otherwise fall back to Ollama /api/ps for VRAM only.
+    """
+    global _vram_used_gb, _vram_total_gb, _gpu_temperature_c
+
+    if THUNDER_METRICS_URL:
+        try:
+            r = await _http_client.get(THUNDER_METRICS_URL, timeout=5)
+            if r.status_code == 200:
+                gpus = r.json().get("gpus", [])
+                if gpus:
+                    g = gpus[0]
+                    _vram_used_gb      = g.get("vram_used_gb", 0.0)
+                    _vram_total_gb     = g.get("vram_total_gb", 0.0)
+                    _gpu_temperature_c = g.get("gpu_temperature_c", 0.0)
+                    return
+        except Exception:
+            pass
+
+    # fallback: Ollama /api/ps for VRAM
     try:
         r = await _http_client.get(f"{OLLAMA_BASE_URL}/api/ps", timeout=5)
         if r.status_code == 200:
             models = r.json().get("models", [])
             if models:
-                vram_bytes = sum(m.get("size_vram", 0) for m in models)
-                size_bytes = sum(m.get("size", 0) for m in models)
-                _vram_used_gb = vram_bytes / 1024**3
-                _vram_total_gb = size_bytes / 1024**3
+                _vram_used_gb  = sum(m.get("size_vram", 0) for m in models) / 1024**3
+                _vram_total_gb = sum(m.get("size", 0) for m in models) / 1024**3
     except Exception:
         pass
 
@@ -123,7 +145,7 @@ async def _push_heartbeat() -> None:
                     gpu_utilization=_gpu_utilization(),
                     vram_used_gb=_vram_used_gb,
                     vram_total_gb=_vram_total_gb,
-                    gpu_temperature_c=0.0,
+                    gpu_temperature_c=_gpu_temperature_c,
                     timestamp=time.time(),
                 ).model_dump(),
             )
@@ -140,7 +162,7 @@ async def _push_metrics() -> None:
         if ASSIGNED_WORKER_ID is None:
             await _register()
             continue
-        await _poll_ollama_gpu()
+        await _poll_gpu_metrics()
         try:
             avg_lat = sum(_latency_window) / len(_latency_window) if _latency_window else 0.0
             r = await _http_client.post(
@@ -155,7 +177,7 @@ async def _push_metrics() -> None:
                     gpu_utilization=_gpu_utilization(),
                     vram_used_gb=_vram_used_gb,
                     vram_total_gb=_vram_total_gb,
-                    gpu_temperature_c=0.0,
+                    gpu_temperature_c=_gpu_temperature_c,
                     timestamp=time.time(),
                 ).model_dump(),
             )

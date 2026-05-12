@@ -20,6 +20,7 @@ x-worker-env: &worker-env
   METRICS_INTERVAL_SECONDS: "1"
   REGISTRATION_RETRY_SECONDS: "2"
   LATENCY_WINDOW: "20"
+  MAX_TOKENS_PER_SECOND: "80"
 
 services:
 
@@ -112,6 +113,7 @@ services:
       WORKER_NAME: worker-1
       WORKER_HOST: worker-1
       OLLAMA_BASE_URL: ${THUNDER_COMPUTE_URL_1:-http://host.docker.internal:11434}
+      THUNDER_METRICS_URL: ${THUNDER_METRICS_URL_1:-}
 
   worker-2:
     <<: *worker
@@ -122,6 +124,7 @@ services:
       WORKER_NAME: worker-2
       WORKER_HOST: worker-2
       OLLAMA_BASE_URL: ${THUNDER_COMPUTE_URL_2:-http://host.docker.internal:11434}
+      THUNDER_METRICS_URL: ${THUNDER_METRICS_URL_2:-}
 
   worker-3:
     <<: *worker
@@ -132,6 +135,7 @@ services:
       WORKER_NAME: worker-3
       WORKER_HOST: worker-3
       OLLAMA_BASE_URL: ${THUNDER_COMPUTE_URL_3:-http://host.docker.internal:11434}
+      THUNDER_METRICS_URL: ${THUNDER_METRICS_URL_3:-}
 
   worker-4:
     <<: *worker
@@ -142,6 +146,7 @@ services:
       WORKER_NAME: worker-4
       WORKER_HOST: worker-4
       OLLAMA_BASE_URL: ${THUNDER_COMPUTE_URL_4:-http://host.docker.internal:11434}
+      THUNDER_METRICS_URL: ${THUNDER_METRICS_URL_4:-}
 
   worker-5:
     <<: *worker
@@ -152,6 +157,7 @@ services:
       WORKER_NAME: worker-5
       WORKER_HOST: worker-5
       OLLAMA_BASE_URL: ${THUNDER_COMPUTE_URL_5:-http://host.docker.internal:11434}
+      THUNDER_METRICS_URL: ${THUNDER_METRICS_URL_5:-}
 
   # ── Client ────────────────────────────────────────────────────
   client:
