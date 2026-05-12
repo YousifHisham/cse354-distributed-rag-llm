@@ -33,6 +33,7 @@ WORKER_PORT: int = int(os.environ.get("WORKER_PORT", "8001"))
 WORKER_HOST: str = os.environ.get("WORKER_HOST", WORKER_NAME)
 WORKER_ADDRESS: str = os.environ.get("WORKER_ADDRESS", f"http://{os.environ.get('WORKER_HOST', WORKER_NAME)}:{os.environ.get('WORKER_PORT', '8001')}")
 COORDINATOR_URL: str = os.environ.get("COORDINATOR_URL", "http://control:8000")
+OLLAMA_SSL_VERIFY: bool = os.environ.get("OLLAMA_SSL_VERIFY", "true").lower() != "false"
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "llama3.1:8b")
 METRICS_INTERVAL_SECONDS: float = float(os.environ.get("METRICS_INTERVAL_SECONDS", "1"))
@@ -182,7 +183,7 @@ async def _push_metrics() -> None:
 async def lifespan(app: FastAPI):
     global _http_client, _shutdown
     _shutdown = False
-    _http_client = httpx.AsyncClient(timeout=120.0)
+    _http_client = httpx.AsyncClient(timeout=120.0, verify=OLLAMA_SSL_VERIFY)
 
     await _register()
     heartbeat_task = asyncio.create_task(_push_heartbeat())
