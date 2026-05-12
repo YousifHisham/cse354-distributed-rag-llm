@@ -105,6 +105,8 @@ services:
   # ── Workers (Mac containers → Thunder Compute Ollama) ─────────
   worker-1:
     <<: *worker
+    ports:
+      - "9001:8001"
     environment:
       <<: *worker-env
       WORKER_NAME: worker-1
@@ -113,6 +115,8 @@ services:
 
   worker-2:
     <<: *worker
+    ports:
+      - "9002:8001"
     environment:
       <<: *worker-env
       WORKER_NAME: worker-2
@@ -121,6 +125,8 @@ services:
 
   worker-3:
     <<: *worker
+    ports:
+      - "9003:8001"
     environment:
       <<: *worker-env
       WORKER_NAME: worker-3
@@ -129,6 +135,8 @@ services:
 
   worker-4:
     <<: *worker
+    ports:
+      - "9004:8001"
     environment:
       <<: *worker-env
       WORKER_NAME: worker-4
@@ -137,6 +145,8 @@ services:
 
   worker-5:
     <<: *worker
+    ports:
+      - "9005:8001"
     environment:
       <<: *worker-env
       WORKER_NAME: worker-5
