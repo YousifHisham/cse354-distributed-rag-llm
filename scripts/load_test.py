@@ -26,6 +26,7 @@ from common import QUERIES
 MASTER_URL = os.environ.get("COORDINATOR_URL", "http://localhost")
 ANSWER_CHARS = int(os.environ.get("ANSWER_CHARS", "300"))
 SLOWEST_REQUESTS = int(os.environ.get("SLOWEST_REQUESTS", "5"))
+CPU_LIKE_TOKENS_PER_SECOND = float(os.environ.get("CPU_LIKE_TOKENS_PER_SECOND", "10"))
 
 
 def percentile(sorted_values: list[float], pct: float) -> float:
@@ -43,9 +44,24 @@ def _answer_preview(answer: str) -> str:
 
 def print_request_details(idx: int, query: str, data: dict, elapsed_ms: float) -> None:
     sources = data.get("rag_sources") or []
+    token_speed = data.get("tokens_per_second", 0.0)
+    speed_note = " CPU-LIKE?" if 0 < token_speed < CPU_LIKE_TOKENS_PER_SECOND else ""
     print(f"  [{idx:4d}] OK")
     print(f"         request_id={data.get('request_id', '?')}")
     print(f"         worker={data.get('worker_id', '?')} latency={elapsed_ms/1000:.2f}s retries={data.get('retry_count', 0)}")
+    print(
+        "         timing="
+        f"rag={data.get('rag_latency_ms', 0)/1000:.2f}s "
+        f"queue={data.get('queue_wait_ms', 0)/1000:.2f}s "
+        f"worker={data.get('worker_latency_ms', 0)/1000:.2f}s "
+        f"worker_wait={data.get('worker_queue_wait_ms', 0)/1000:.2f}s "
+        f"ollama={data.get('ollama_latency_ms', 0)/1000:.2f}s"
+    )
+    print(
+        f"         tokens=prompt:{data.get('prompt_eval_count', 0)} "
+        f"generated:{data.get('eval_count', 0)} "
+        f"speed={token_speed:.1f} tok/s{speed_note}"
+    )
     print(f"         rag={'yes' if data.get('rag_used') else 'no'} context={data.get('rag_context_chars', 0)} chars sources={', '.join(sources) if sources else 'none'}")
     print(f"         Q: {query}")
     print(f"         A: {_answer_preview(data.get('answer', ''))}")
@@ -71,6 +87,14 @@ async def send(client: httpx.AsyncClient, idx: int, query: str) -> dict:
                 "rag_used": d.get("rag_used", False),
                 "rag_context_chars": d.get("rag_context_chars", 0),
                 "rag_sources": d.get("rag_sources", []),
+                "rag_latency_ms": d.get("rag_latency_ms", 0.0),
+                "queue_wait_ms": d.get("queue_wait_ms", 0.0),
+                "worker_latency_ms": d.get("worker_latency_ms", 0.0),
+                "worker_queue_wait_ms": d.get("worker_queue_wait_ms", 0.0),
+                "ollama_latency_ms": d.get("ollama_latency_ms", 0.0),
+                "prompt_eval_count": d.get("prompt_eval_count", 0),
+                "eval_count": d.get("eval_count", 0),
+                "tokens_per_second": d.get("tokens_per_second", 0.0),
             }
         print(f"  [{idx:4d}] ERR    status={r.status_code}  lat={elapsed/1000:.2f}s")
         return {"ok": False, "query": query, "latency_ms": elapsed, "status": r.status_code}
@@ -134,6 +158,13 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
     retried_requests = sum(1 for r in ok if r.get("retry_count", 0) > 0)
     rag_count = sum(1 for r in ok if r.get("rag_used"))
     rag_context_sizes = [r.get("rag_context_chars", 0) for r in ok]
+    rag_lats = sorted(r.get("rag_latency_ms", 0.0) for r in ok)
+    queue_lats = sorted(r.get("queue_wait_ms", 0.0) for r in ok)
+    worker_lats = sorted(r.get("worker_latency_ms", 0.0) for r in ok)
+    worker_wait_lats = sorted(r.get("worker_queue_wait_ms", 0.0) for r in ok)
+    ollama_lats = sorted(r.get("ollama_latency_ms", 0.0) for r in ok)
+    token_speeds = [r.get("tokens_per_second", 0.0) for r in ok if r.get("tokens_per_second", 0.0) > 0]
+    cpu_like = [r for r in ok if 0 < r.get("tokens_per_second", 0.0) < CPU_LIKE_TOKENS_PER_SECOND]
     slowest = sorted(ok, key=lambda r: r["latency_ms"], reverse=True)[:SLOWEST_REQUESTS]
 
     print(f"\n{'='*55}")
@@ -160,6 +191,30 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
         print(f"    p99   : {percentile(lats, 0.99)/1000:.2f}s")
         print(f"    min   : {lats[0]/1000:.2f}s")
         print(f"    max   : {lats[-1]/1000:.2f}s")
+        print("\n  Timing breakdown")
+        print(
+            f"    RAG lookup       mean={statistics.mean(rag_lats)/1000:.2f}s "
+            f"p95={percentile(rag_lats, 0.95)/1000:.2f}s"
+        )
+        print(
+            f"    Coordinator queue mean={statistics.mean(queue_lats)/1000:.2f}s "
+            f"p95={percentile(queue_lats, 0.95)/1000:.2f}s"
+        )
+        print(
+            f"    Worker roundtrip  mean={statistics.mean(worker_lats)/1000:.2f}s "
+            f"p95={percentile(worker_lats, 0.95)/1000:.2f}s"
+        )
+        print(
+            f"    Worker wait       mean={statistics.mean(worker_wait_lats)/1000:.2f}s "
+            f"p95={percentile(worker_wait_lats, 0.95)/1000:.2f}s"
+        )
+        print(
+            f"    Ollama generate   mean={statistics.mean(ollama_lats)/1000:.2f}s "
+            f"p95={percentile(ollama_lats, 0.95)/1000:.2f}s"
+        )
+        if token_speeds:
+            print(f"    Token speed       mean={statistics.mean(token_speeds):.1f} tok/s")
+            print(f"    CPU-like speeds   {len(cpu_like)}/{len(ok)} below {CPU_LIKE_TOKENS_PER_SECOND:.1f} tok/s")
     if worker_counts:
         print("\n  Worker distribution")
         for wid, count in sorted(worker_counts.items(), key=lambda x: -x[1]):
@@ -230,6 +285,14 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
             "p90_latency_ms": round(percentile(lats, 0.90), 2) if lats else 0.0,
             "p95_latency_ms": round(percentile(lats, 0.95), 2) if lats else 0.0,
             "p99_latency_ms": round(percentile(lats, 0.99), 2) if lats else 0.0,
+            "avg_rag_latency_ms": round(statistics.mean(rag_lats), 2) if lats else 0.0,
+            "avg_queue_wait_ms": round(statistics.mean(queue_lats), 2) if lats else 0.0,
+            "avg_worker_latency_ms": round(statistics.mean(worker_lats), 2) if lats else 0.0,
+            "avg_worker_queue_wait_ms": round(statistics.mean(worker_wait_lats), 2) if lats else 0.0,
+            "avg_ollama_latency_ms": round(statistics.mean(ollama_lats), 2) if lats else 0.0,
+            "avg_tokens_per_second": round(statistics.mean(token_speeds), 2) if token_speeds else 0.0,
+            "cpu_like_token_speed_requests": len(cpu_like),
+            "cpu_like_token_speed_threshold": CPU_LIKE_TOKENS_PER_SECOND,
             "total_retries": total_retries,
             "retried_requests": retried_requests,
             "worker_distribution": dict(worker_counts),

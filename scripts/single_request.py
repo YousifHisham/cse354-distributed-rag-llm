@@ -31,6 +31,20 @@ try:
     print(f"Worker:   {data['worker_id']}")
     print(f"Latency:  {data['latency_ms']/1000:.2f}s")
     print(f"Retries:  {data['retry_count']}")
+    print(
+        "Timing:  "
+        f"rag={data.get('rag_latency_ms', 0)/1000:.2f}s, "
+        f"queue={data.get('queue_wait_ms', 0)/1000:.2f}s, "
+        f"worker={data.get('worker_latency_ms', 0)/1000:.2f}s, "
+        f"worker_wait={data.get('worker_queue_wait_ms', 0)/1000:.2f}s, "
+        f"ollama={data.get('ollama_latency_ms', 0)/1000:.2f}s"
+    )
+    print(
+        "Tokens:  "
+        f"prompt={data.get('prompt_eval_count', 0)}, "
+        f"generated={data.get('eval_count', 0)}, "
+        f"speed={data.get('tokens_per_second', 0):.1f} tok/s"
+    )
     print(f"RAG:      {'yes' if data.get('rag_used') else 'no'}")
     print(f"Context:  {data.get('rag_context_chars', 0)} chars")
     sources = data.get("rag_sources") or []

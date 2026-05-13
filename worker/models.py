@@ -11,6 +11,11 @@ class InferResponse(BaseModel):
     request_id: str
     answer: str
     latency_ms: float
+    worker_queue_wait_ms: float = 0.0
+    ollama_latency_ms: float = 0.0
+    prompt_eval_count: int = 0
+    eval_count: int = 0
+    tokens_per_second: float = 0.0
 
 
 class WorkerMetrics(BaseModel):

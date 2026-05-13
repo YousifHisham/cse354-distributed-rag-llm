@@ -24,6 +24,15 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v nvidia-modprobe >/dev/null 2>&1; then
+  log "Installing nvidia-modprobe for NVIDIA UVM setup"
+  sudo apt-get update
+  sudo apt-get install -y nvidia-modprobe
+fi
+
+log "Loading NVIDIA UVM driver for Ollama GPU discovery"
+sudo nvidia-modprobe -u
+
 if [[ ! -f "$METRICS_SCRIPT" ]]; then
   log "ERROR: missing $METRICS_SCRIPT"
   log "Run this script from the repo copy on the Thunder node."
@@ -36,6 +45,7 @@ pkill -f "thunder_metrics.py" >/dev/null 2>&1 || true
 
 log "Starting Ollama on 0.0.0.0:${OLLAMA_PORT}"
 OLLAMA_HOST="0.0.0.0:${OLLAMA_PORT}" \
+  OLLAMA_DEBUG="${OLLAMA_DEBUG:-1}" \
   nohup ollama serve > "$LOG_DIR/ollama.log" 2>&1 &
 
 sleep 3

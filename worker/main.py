@@ -38,6 +38,7 @@ THUNDER_METRICS_URL       = os.environ.get("THUNDER_METRICS_URL", "")  # optiona
 LLM_MODEL                 = os.environ.get("LLM_MODEL", "llama3.1:8b")
 OLLAMA_MAX_OUTPUT_TOKENS = int(os.environ.get("OLLAMA_MAX_OUTPUT_TOKENS", "300"))
 OLLAMA_MAX_CONCURRENT_REQUESTS = int(os.environ.get("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
+OLLAMA_KEEP_ALIVE         = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 METRICS_INTERVAL_SECONDS  = float(os.environ.get("METRICS_INTERVAL_SECONDS", "1"))
 HEARTBEAT_INTERVAL_SECONDS= float(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "0.5"))
 REGISTRATION_RETRY_SECONDS= float(os.environ.get("REGISTRATION_RETRY_SECONDS", "2"))
@@ -111,6 +112,14 @@ def _parse_ollama_metadata(data: dict) -> None:
     eval_duration = data.get("eval_duration", 0)  # nanoseconds
     if eval_count and eval_duration:
         _tokens_per_second = eval_count / (eval_duration / 1e9)
+
+
+def _tokens_per_second_from_response(data: dict) -> float:
+    eval_count = data.get("eval_count", 0)
+    eval_duration = data.get("eval_duration", 0)
+    if eval_count and eval_duration:
+        return eval_count / (eval_duration / 1e9)
+    return 0.0
 
 
 async def _refresh_backend_readiness() -> None:
@@ -265,16 +274,21 @@ async def infer(body: InferRequest) -> InferResponse:
     _active_tasks += 1
     start = time.time()
     try:
+        wait_start = time.time()
         async with _ollama_semaphore:
+            worker_queue_wait_ms = (time.time() - wait_start) * 1000
+            ollama_start = time.time()
             r = await _http_client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
                     "model": body.model,
                     "prompt": body.prompt,
                     "stream": False,
+                    "keep_alive": OLLAMA_KEEP_ALIVE,
                     "options": {"num_predict": OLLAMA_MAX_OUTPUT_TOKENS},
                 },
             )
+            ollama_latency_ms = (time.time() - ollama_start) * 1000
         r.raise_for_status()
         data = r.json()
         answer: str = data.get("response", "")
@@ -285,7 +299,16 @@ async def infer(body: InferRequest) -> InferResponse:
         latency_ms = (time.time() - start) * 1000
         _latency_window.append(latency_ms)
         _completed_tasks += 1
-        return InferResponse(request_id=body.request_id, answer=answer, latency_ms=latency_ms)
+        return InferResponse(
+            request_id=body.request_id,
+            answer=answer,
+            latency_ms=latency_ms,
+            worker_queue_wait_ms=worker_queue_wait_ms,
+            ollama_latency_ms=ollama_latency_ms,
+            prompt_eval_count=data.get("prompt_eval_count", 0),
+            eval_count=data.get("eval_count", 0),
+            tokens_per_second=_tokens_per_second_from_response(data),
+        )
     except Exception as exc:
         _failed_tasks += 1
         logger.error("[worker] infer failed for %s: %s", body.request_id, exc)

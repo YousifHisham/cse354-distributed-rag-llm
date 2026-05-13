@@ -95,7 +95,9 @@ class QueuedJob:
     prompt: str
     context: str
     rag_sources: list[str]
+    rag_latency_ms: float
     created_at: float
+    queued_at: float
     future: asyncio.Future[Response]
 
 
@@ -218,6 +220,7 @@ async def _execute_job(job: QueuedJob) -> None:
 
             await registry.increment_assigned(worker.worker_id)
             try:
+                dispatch_started_at = time.time()
                 resp = await _http_client.post(
                     f"{worker.address}/infer",
                     json=InferRequest(
@@ -228,14 +231,20 @@ async def _execute_job(job: QueuedJob) -> None:
                 )
                 if resp.status_code == 200:
                     infer = InferResponse(**resp.json())
+                    worker_roundtrip_ms = (time.time() - dispatch_started_at) * 1000
                     latency_ms = (time.time() - job.created_at) * 1000
+                    queue_wait_ms = (dispatch_started_at - job.queued_at) * 1000
                     active_request_ids.discard(job.request_id)
                     requests_completed.inc()
                     request_latency.observe(latency_ms)
                     logger.info(
-                        "[query] %s completed in %.0fms (retries=%d) worker=%s",
+                        "[query] %s completed in %.0fms (rag=%.0fms queue=%.0fms worker=%.0fms ollama=%.0fms retries=%d) worker=%s",
                         job.request_id,
                         latency_ms,
+                        job.rag_latency_ms,
+                        queue_wait_ms,
+                        worker_roundtrip_ms,
+                        infer.ollama_latency_ms,
                         attempt,
                         worker.worker_id,
                     )
@@ -249,6 +258,14 @@ async def _execute_job(job: QueuedJob) -> None:
                             rag_used=bool(job.context),
                             rag_context_chars=len(job.context),
                             rag_sources=job.rag_sources,
+                            rag_latency_ms=job.rag_latency_ms,
+                            queue_wait_ms=queue_wait_ms,
+                            worker_latency_ms=worker_roundtrip_ms,
+                            worker_queue_wait_ms=infer.worker_queue_wait_ms,
+                            ollama_latency_ms=infer.ollama_latency_ms,
+                            prompt_eval_count=infer.prompt_eval_count,
+                            eval_count=infer.eval_count,
+                            tokens_per_second=infer.tokens_per_second,
                         )
                     )
                     return
@@ -443,29 +460,35 @@ async def handle_query(body: QueryBody):
     logger.info("[query] %s received: %.80s", request_id, body.query)
 
     loop = asyncio.get_running_loop()
+    rag_started_at = time.time()
     rag_result = await loop.run_in_executor(None, retriever.retrieve, body.query, RAG_TOP_K)
+    rag_latency_ms = (time.time() - rag_started_at) * 1000
     prompt = (
         f"Context:\n{rag_result.context}\n\nQuestion: {body.query}\n\nAnswer:"
         if rag_result.used
         else body.query
     )
     logger.info(
-        "[query] %s enriched (rag_used=%s context=%d chars sources=%s)",
+        "[query] %s enriched (rag_used=%s context=%d chars latency=%.0fms sources=%s)",
         request_id,
         rag_result.used,
         rag_result.context_chars,
+        rag_latency_ms,
         ",".join(rag_result.sources) or "none",
     )
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Response] = loop.create_future()
+    queued_at = time.time()
     job = QueuedJob(
         request_id=request_id,
         query=body.query,
         prompt=prompt,
         context=rag_result.context,
         rag_sources=rag_result.sources,
+        rag_latency_ms=rag_latency_ms,
         created_at=created_at,
+        queued_at=queued_at,
         future=future,
     )
 
