@@ -24,6 +24,7 @@ class WorkerMetrics(BaseModel):
     vram_used_gb: float = 0.0
     vram_total_gb: float = 0.0
     gpu_temperature_c: float = 0.0
+    backend_available: bool = False
     timestamp: float
 
 
@@ -34,6 +35,7 @@ class WorkerHeartbeat(BaseModel):
     vram_used_gb: float = 0.0
     vram_total_gb: float = 0.0
     gpu_temperature_c: float = 0.0
+    backend_available: bool = False
     timestamp: float
 
 
@@ -41,6 +43,7 @@ class WorkerRegistration(BaseModel):
     address: str
     name: str | None = None
     model: str | None = None
+    backend_available: bool = False
 
 
 class WorkerRegistrationResponse(BaseModel):

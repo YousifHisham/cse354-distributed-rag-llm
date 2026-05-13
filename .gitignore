@@ -16,6 +16,9 @@ dist/
 # Docker
 *.log
 
+# Test output
+results/
+
 # macOS
 .DS_Store
 

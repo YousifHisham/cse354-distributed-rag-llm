@@ -3,14 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
-
-
-class RequestStatus(str, Enum):
-    pending = "pending"
-    in_progress = "in_progress"
-    completed = "completed"
-    failed = "failed"
+from pydantic import BaseModel, Field
 
 
 class WorkerStatus(str, Enum):
@@ -29,6 +22,7 @@ class WorkerMetrics(BaseModel):
     vram_used_gb: float = 0.0
     vram_total_gb: float = 0.0
     gpu_temperature_c: float = 0.0
+    backend_available: bool = False
     timestamp: float
 
 
@@ -39,6 +33,7 @@ class WorkerHeartbeat(BaseModel):
     vram_used_gb: float = 0.0
     vram_total_gb: float = 0.0
     gpu_temperature_c: float = 0.0
+    backend_available: bool = False
     timestamp: float
 
 
@@ -48,6 +43,7 @@ class WorkerInfo(BaseModel):
     name: Optional[str] = None
     model: Optional[str] = None
     status: WorkerStatus = WorkerStatus.healthy
+    backend_available: bool = False
     last_metrics: Optional[WorkerMetrics] = None
     last_heartbeat: Optional[float] = None
     assigned_tasks: int = 0
@@ -66,21 +62,12 @@ class InferResponse(BaseModel):
     latency_ms: float
 
 
-class Request(BaseModel):
-    id: str
-    query: str
-    context: Optional[str] = None
-    status: RequestStatus = RequestStatus.pending
-    assigned_worker_id: Optional[str] = None
-    retry_count: int = 0
-    created_at: float
-    dispatched_at: Optional[float] = None
-    completed_at: Optional[float] = None
-
-
 class Response(BaseModel):
     request_id: str
     answer: str
     latency_ms: float
     worker_id: str
     retry_count: int
+    rag_used: bool = False
+    rag_context_chars: int = 0
+    rag_sources: list[str] = Field(default_factory=list)

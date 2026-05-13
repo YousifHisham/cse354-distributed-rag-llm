@@ -3,10 +3,25 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RagResult:
+    context: str
+    sources: list[str]
+
+    @property
+    def used(self) -> bool:
+        return bool(self.context)
+
+    @property
+    def context_chars(self) -> int:
+        return len(self.context)
 
 
 class ChromaRetriever:
@@ -94,9 +109,9 @@ class ChromaRetriever:
             f"Could not connect to Chroma at {self._chroma_host}:{self._chroma_port}"
         ) from last_error
 
-    def retrieve(self, query: str, top_k: int) -> str:
+    def retrieve(self, query: str, top_k: int) -> RagResult:
         if self._collection is None or self._model is None:
-            return ""
+            return RagResult(context="", sources=[])
 
         results = self._collection.query(
             query_texts=[query],
@@ -105,7 +120,18 @@ class ChromaRetriever:
         )
 
         passages = results.get("documents", [[]])[0]
-        return "\n\n---\n\n".join(passages)
+        metadatas = results.get("metadatas", [[]])[0]
+        sources: list[str] = []
+        for metadata in metadatas:
+            source = metadata.get("source") if isinstance(metadata, dict) else None
+            chunk_index = metadata.get("chunk_index") if isinstance(metadata, dict) else None
+            if source is None:
+                continue
+            label = f"{source}#{chunk_index}" if chunk_index is not None else str(source)
+            if label not in sources:
+                sources.append(label)
+
+        return RagResult(context="\n\n---\n\n".join(passages), sources=sources)
 
 
 def _chunk_text(text: str, max_chars: int = 1200) -> Iterable[str]:

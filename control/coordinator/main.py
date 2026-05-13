@@ -7,7 +7,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response as FastAPIResponse
@@ -31,6 +30,7 @@ from .metrics import (
     worker_failed_tasks,
     worker_gpu_temperature_c,
     worker_gpu_utilization,
+    worker_ollama_available,
     worker_resource_utilization,
     worker_status,
     worker_vram_total_gb,
@@ -39,8 +39,6 @@ from .metrics import (
 from .models import (
     InferRequest,
     InferResponse,
-    Request,
-    RequestStatus,
     Response,
     WorkerHeartbeat,
     WorkerMetrics,
@@ -57,10 +55,16 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 LB_STRATEGY = os.environ.get("LB_STRATEGY", "least_tasks")
-WORKER_STALENESS_SECONDS = float(os.environ.get("WORKER_STALENESS_SECONDS", "30"))
+HEARTBEAT_INTERVAL_SECONDS = float(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "0.5"))
+WORKER_MISSED_HEARTBEATS = int(os.environ.get("WORKER_MISSED_HEARTBEATS", "6"))
+WORKER_STALENESS_SECONDS = float(
+    os.environ.get(
+        "WORKER_STALENESS_SECONDS",
+        str(HEARTBEAT_INTERVAL_SECONDS * WORKER_MISSED_HEARTBEATS),
+    )
+)
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "2"))
 MAX_QUEUE_SIZE = int(os.environ.get("MAX_QUEUE_SIZE", "5000"))
-REQUEST_TIMEOUT_SECONDS = float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "60"))
 LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
 KNOWLEDGE_DIR = os.environ.get("KNOWLEDGE_DIR", "/app/knowledge")
@@ -78,10 +82,10 @@ retriever = ChromaRetriever(
 )
 strategy: Strategy = get_strategy(LB_STRATEGY)
 strategy_lock = asyncio.Lock()
-active_requests: dict[str, Request] = {}
+active_request_ids: set[str] = set()
 job_queue: asyncio.PriorityQueue[tuple[float, str, "QueuedJob"]] = asyncio.PriorityQueue(maxsize=MAX_QUEUE_SIZE)
-_http_client: Optional[httpx.AsyncClient] = None
-_scheduler_task: Optional[asyncio.Task] = None
+_http_client: httpx.AsyncClient | None = None
+_scheduler_task: asyncio.Task | None = None
 
 
 @dataclass
@@ -90,6 +94,7 @@ class QueuedJob:
     query: str
     prompt: str
     context: str
+    rag_sources: list[str]
     created_at: float
     future: asyncio.Future[Response]
 
@@ -97,14 +102,18 @@ class QueuedJob:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 async def _refresh_worker_gauges() -> None:
     all_workers = await registry.get_all()
-    n_healthy = sum(1 for w in all_workers if w.status == WorkerStatus.healthy)
+    n_healthy = sum(
+        1 for w in all_workers
+        if w.status == WorkerStatus.healthy and w.backend_available
+    )
     prom_healthy_workers.set(n_healthy)
     prom_total_workers.set(len(all_workers))
     for w in all_workers:
         wid = w.worker_id
         worker_status.labels(worker_id=wid).set(
-            1 if w.status == WorkerStatus.healthy else 0
+            1 if w.status == WorkerStatus.healthy and w.backend_available else 0
         )
+        worker_ollama_available.labels(worker_id=wid).set(1 if w.backend_available else 0)
         if w.last_metrics:
             m = w.last_metrics
             worker_active_tasks.labels(worker_id=wid).set(m.active_tasks)
@@ -122,8 +131,9 @@ async def _refresh_worker_gauges() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _http_client, _scheduler_task
-    retriever.load()
-    _http_client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS + 5)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, retriever.load)
+    _http_client = httpx.AsyncClient(timeout=None)
     staleness_task = asyncio.create_task(_staleness_checker())
     _scheduler_task = asyncio.create_task(_scheduler_loop())
     logger.info(
@@ -131,13 +141,12 @@ async def lifespan(app: FastAPI):
         strategy.label, WORKER_STALENESS_SECONDS, MAX_RETRIES, MAX_QUEUE_SIZE,
     )
     yield
-    if active_requests:
+    if active_request_ids:
         logger.info(
             "[coordinator] shutdown: waiting for %d in-flight request(s)...",
-            len(active_requests),
+            len(active_request_ids),
         )
-        deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
-        while active_requests and time.monotonic() < deadline:
+        while active_request_ids:
             await asyncio.sleep(0.5)
     staleness_task.cancel()
     _scheduler_task.cancel()
@@ -205,16 +214,7 @@ async def _execute_job(job: QueuedJob) -> None:
                 MAX_RETRIES,
             )
 
-            active_requests[job.request_id] = Request(
-                id=job.request_id,
-                query=job.query,
-                context=job.context or None,
-                status=RequestStatus.in_progress,
-                assigned_worker_id=worker.worker_id,
-                retry_count=attempt,
-                created_at=job.created_at,
-                dispatched_at=time.time(),
-            )
+            active_request_ids.add(job.request_id)
 
             await registry.increment_assigned(worker.worker_id)
             try:
@@ -229,7 +229,7 @@ async def _execute_job(job: QueuedJob) -> None:
                 if resp.status_code == 200:
                     infer = InferResponse(**resp.json())
                     latency_ms = (time.time() - job.created_at) * 1000
-                    active_requests.pop(job.request_id, None)
+                    active_request_ids.discard(job.request_id)
                     requests_completed.inc()
                     request_latency.observe(latency_ms)
                     logger.info(
@@ -246,6 +246,9 @@ async def _execute_job(job: QueuedJob) -> None:
                             latency_ms=latency_ms,
                             worker_id=worker.worker_id,
                             retry_count=attempt,
+                            rag_used=bool(job.context),
+                            rag_context_chars=len(job.context),
+                            rag_sources=job.rag_sources,
                         )
                     )
                     return
@@ -274,7 +277,7 @@ async def _execute_job(job: QueuedJob) -> None:
                 requests_retried.inc()
             failed_worker_ids.add(worker.worker_id)
 
-        active_requests.pop(job.request_id, None)
+        active_request_ids.discard(job.request_id)
         requests_failed.inc()
         logger.error("[query] %s failed permanently after %d retries", job.request_id, MAX_RETRIES)
         job.future.set_exception(
@@ -284,7 +287,7 @@ async def _execute_job(job: QueuedJob) -> None:
             )
         )
     except Exception as exc:
-        active_requests.pop(job.request_id, None)
+        active_request_ids.discard(job.request_id)
         requests_failed.inc()
         if not job.future.done():
             job.future.set_exception(exc)
@@ -295,6 +298,7 @@ class WorkerRegistrationBody(BaseModel):
     address: str
     name: str | None = None
     model: str | None = None
+    backend_available: bool = False
 
 
 class QueryBody(BaseModel):
@@ -323,6 +327,7 @@ async def register_worker(body: WorkerRegistrationBody):
         address=body.address,
         name=body.name,
         model=body.model,
+        backend_available=body.backend_available,
     )
     await _refresh_worker_gauges()
     return {"status": "registered", "worker_id": worker.worker_id}
@@ -342,6 +347,7 @@ async def receive_heartbeat(heartbeat: WorkerHeartbeat):
     worker_vram_used_gb.labels(worker_id=wid).set(heartbeat.vram_used_gb)
     worker_vram_total_gb.labels(worker_id=wid).set(heartbeat.vram_total_gb)
     worker_gpu_temperature_c.labels(worker_id=wid).set(heartbeat.gpu_temperature_c)
+    worker_ollama_available.labels(worker_id=wid).set(1 if heartbeat.backend_available else 0)
     return {"status": "ok"}
 
 
@@ -359,13 +365,17 @@ async def receive_metrics(metrics: WorkerMetrics):
     worker_avg_latency_ms.labels(worker_id=wid).set(metrics.avg_latency_ms)
     worker_completed_tasks.labels(worker_id=wid).set(metrics.completed_tasks)
     worker_failed_tasks.labels(worker_id=wid).set(metrics.failed_tasks)
+    worker_ollama_available.labels(worker_id=wid).set(1 if metrics.backend_available else 0)
     return {"status": "received"}
 
 
 @app.get("/health")
 async def health():
     all_workers = await registry.get_all()
-    healthy = [w for w in all_workers if w.status == WorkerStatus.healthy]
+    healthy = [
+        w for w in all_workers
+        if w.status == WorkerStatus.healthy and w.backend_available
+    ]
     return {
         "status": "ok",
         "healthy_workers": len(healthy),
@@ -382,14 +392,20 @@ async def workers():
 @app.get("/debug/state")
 async def debug_state():
     all_workers = await registry.get_all()
-    healthy = [w for w in all_workers if w.status == WorkerStatus.healthy]
+    healthy = [
+        w for w in all_workers
+        if w.status == WorkerStatus.healthy and w.backend_available
+    ]
     return {
         "strategy": strategy.label,
         "queue_depth": job_queue.qsize(),
         "max_queue_size": MAX_QUEUE_SIZE,
-        "active_requests": len(active_requests),
+        "active_requests": len(active_request_ids),
         "healthy_workers": len(healthy),
         "total_workers": len(all_workers),
+        "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+        "worker_missed_heartbeats": WORKER_MISSED_HEARTBEATS,
+        "worker_staleness_seconds": WORKER_STALENESS_SECONDS,
         "workers": all_workers,
     }
 
@@ -426,13 +442,20 @@ async def handle_query(body: QueryBody):
 
     logger.info("[query] %s received: %.80s", request_id, body.query)
 
-    context = retriever.retrieve(body.query, RAG_TOP_K)
+    loop = asyncio.get_running_loop()
+    rag_result = await loop.run_in_executor(None, retriever.retrieve, body.query, RAG_TOP_K)
     prompt = (
-        f"Context:\n{context}\n\nQuestion: {body.query}\n\nAnswer:"
-        if context
+        f"Context:\n{rag_result.context}\n\nQuestion: {body.query}\n\nAnswer:"
+        if rag_result.used
         else body.query
     )
-    logger.info("[query] %s enriched (context %d chars)", request_id, len(context))
+    logger.info(
+        "[query] %s enriched (rag_used=%s context=%d chars sources=%s)",
+        request_id,
+        rag_result.used,
+        rag_result.context_chars,
+        ",".join(rag_result.sources) or "none",
+    )
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Response] = loop.create_future()
@@ -440,7 +463,8 @@ async def handle_query(body: QueryBody):
         request_id=request_id,
         query=body.query,
         prompt=prompt,
-        context=context,
+        context=rag_result.context,
+        rag_sources=rag_result.sources,
         created_at=created_at,
         future=future,
     )

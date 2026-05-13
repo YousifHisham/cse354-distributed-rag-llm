@@ -26,13 +26,23 @@ Everything runs on the Mac in Docker. Thunder Compute nodes run Ollama only.
 SSH into each Thunder Compute node and run:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
-nohup ollama serve > /tmp/ollama.log 2>&1 &
-sleep 3
-ollama pull llama3.1:8b
+chmod +x scripts/bootstrap_thunder_node.sh
+./scripts/bootstrap_thunder_node.sh llama3.1:8b
 ```
 
-Note the public Ollama endpoint URL for each instance from your Thunder Compute dashboard (e.g. `https://abc123-11434.thundercompute.net`).
+The bootstrap script:
+
+- installs Ollama if needed
+- starts Ollama on `0.0.0.0:11434`
+- pulls `llama3.1:8b`
+- starts the GPU metrics helper on `0.0.0.0:8888`
+
+Expose/forward ports `11434` and `8888` in Thunder Compute. Note both public URLs for each instance, for example:
+
+```env
+THUNDER_COMPUTE_URL_1=https://abc123-11434.thundercompute.net
+THUNDER_METRICS_URL_1=https://abc123-8888.thundercompute.net
+```
 
 ### Step 2 — Mac
 
@@ -50,6 +60,12 @@ THUNDER_COMPUTE_URL_2=https://instance2-11434.thundercompute.net
 THUNDER_COMPUTE_URL_3=https://instance3-11434.thundercompute.net
 THUNDER_COMPUTE_URL_4=https://instance4-11434.thundercompute.net
 THUNDER_COMPUTE_URL_5=https://instance5-11434.thundercompute.net
+
+THUNDER_METRICS_URL_1=https://instance1-8888.thundercompute.net
+THUNDER_METRICS_URL_2=https://instance2-8888.thundercompute.net
+THUNDER_METRICS_URL_3=https://instance3-8888.thundercompute.net
+THUNDER_METRICS_URL_4=https://instance4-8888.thundercompute.net
+THUNDER_METRICS_URL_5=https://instance5-8888.thundercompute.net
 ```
 
 **Start the master:**
@@ -72,20 +88,21 @@ curl http://localhost/health
 
 Expected: `{"status":"ok","healthy_workers":5,"total_workers":5}`
 
+`total_workers` counts registered worker containers. `healthy_workers` counts only
+workers that can reach their configured Ollama endpoint and find `LLM_MODEL`.
+
 ---
 
-## Run the Client
+## Run a Single Request
 
-Fires 20 requests simultaneously, prints each answer and a summary:
+```bash
+python3 scripts/single_request.py "What is the CAP theorem?"
+```
+
+The Docker client profile runs the same single-request script:
 
 ```bash
 docker compose --profile client run --rm client
-```
-
-Change the number of requests:
-
-```bash
-NUM_REQUESTS=50 docker compose --profile client run --rm client
 ```
 
 ---
@@ -94,21 +111,32 @@ NUM_REQUESTS=50 docker compose --profile client run --rm client
 
 ```bash
 # Single query from terminal
-python3 scripts/query.py
+python3 scripts/single_request.py
 
-# Load test
+# Generic load test
 python3 scripts/load_test.py
 python3 scripts/load_test.py --requests 100 --strategy gpu_aware
 
-# Live cluster dashboard
-python3 scripts/watch.py
+# Print full answers instead of 300-character answer previews
+ANSWER_CHARS=0 python3 scripts/load_test.py --requests 100
 
-# Full strategy comparison
-./scripts/run_strategy_comparison.sh
+# 1000 requests against every load-balancing strategy
+python3 scripts/strategy_1000_test.py
 
-# PDF evaluation suite
-./scripts/run_pdf_evaluation.sh
+# Fault tolerance evidence run
+python3 scripts/fault_recovery_test.py
 ```
+
+### Script Inventory
+
+| Script | Purpose | Keep? |
+|---|---|---|
+| `scripts/single_request.py` | Sends one query and prints answer, worker, latency, retry count, RAG usage, context size, and RAG sources. | Yes - single-request script. |
+| `scripts/load_test.py` | Sends any chosen number of simultaneous requests, prints every request response/details/RAG access, then prints a summary. | Yes - generic load-test script. |
+| `scripts/bootstrap_thunder_node.sh` | Runs on each Thunder node. Starts Ollama on `0.0.0.0:11434`, pulls the model, and starts GPU metrics on `0.0.0.0:8888`. | Yes - Thunder setup script. |
+| `scripts/thunder_metrics.py` | Runs on each Thunder node and exposes `nvidia-smi` GPU stats as JSON. | Yes - used by the bootstrap script. |
+| `scripts/strategy_1000_test.py` | Runs 1000 simultaneous requests for each strategy: `least_tasks`, `lowest_resource`, `fastest_response`, and `gpu_aware`. | Yes - strategy comparison script. |
+| `scripts/fault_recovery_test.py` | Captures snapshots, runs load while a worker is stopped, then restarts the worker and captures recovery evidence. | Yes - fault recovery script. |
 
 ---
 

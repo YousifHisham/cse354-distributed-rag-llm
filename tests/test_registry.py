@@ -9,7 +9,7 @@ from control.coordinator.registry import WorkerRegistry
 
 
 @pytest.mark.asyncio
-async def test_register_assigns_unique_worker_ids():
+async def test_register_reuses_worker_id_for_same_worker():
     registry = WorkerRegistry()
 
     first = await registry.register("http://worker:8001", name="gpu-a")
@@ -17,8 +17,20 @@ async def test_register_assigns_unique_worker_ids():
 
     assert first.worker_id.startswith("worker-")
     assert second.worker_id.startswith("worker-")
-    assert first.worker_id != second.worker_id
+    assert first.worker_id == second.worker_id
     assert first.name == "gpu-a"
+    assert len(await registry.get_all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_register_assigns_unique_worker_ids_for_different_workers():
+    registry = WorkerRegistry()
+
+    first = await registry.register("http://worker-a:8001", name="gpu-a")
+    second = await registry.register("http://worker-b:8001", name="gpu-b")
+
+    assert first.worker_id != second.worker_id
+    assert len(await registry.get_all()) == 2
 
 
 @pytest.mark.asyncio
@@ -39,6 +51,34 @@ async def test_heartbeat_marks_unavailable_then_recovers():
     )
     worker = (await registry.get_all())[0]
     assert worker.status == WorkerStatus.healthy
+
+
+@pytest.mark.asyncio
+async def test_worker_without_backend_is_not_schedulable():
+    registry = WorkerRegistry()
+    worker = await registry.register("http://worker-1:8001")
+
+    await registry.update_heartbeat(
+        WorkerHeartbeat(
+            worker_id=worker.worker_id,
+            active_tasks=0,
+            backend_available=False,
+            timestamp=time.time(),
+        )
+    )
+
+    assert await registry.get_all_healthy() == []
+
+    await registry.update_heartbeat(
+        WorkerHeartbeat(
+            worker_id=worker.worker_id,
+            active_tasks=0,
+            backend_available=True,
+            timestamp=time.time(),
+        )
+    )
+
+    assert [w.worker_id for w in await registry.get_all_healthy()] == [worker.worker_id]
 
 
 @pytest.mark.asyncio

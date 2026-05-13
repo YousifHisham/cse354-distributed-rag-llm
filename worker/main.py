@@ -36,6 +36,8 @@ OLLAMA_BASE_URL           = os.environ.get("OLLAMA_BASE_URL", "http://localhost:
 OLLAMA_SSL_VERIFY         = os.environ.get("OLLAMA_SSL_VERIFY", "true").lower() != "false"
 THUNDER_METRICS_URL       = os.environ.get("THUNDER_METRICS_URL", "")  # optional
 LLM_MODEL                 = os.environ.get("LLM_MODEL", "llama3.1:8b")
+OLLAMA_MAX_OUTPUT_TOKENS = int(os.environ.get("OLLAMA_MAX_OUTPUT_TOKENS", "300"))
+OLLAMA_MAX_CONCURRENT_REQUESTS = int(os.environ.get("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
 METRICS_INTERVAL_SECONDS  = float(os.environ.get("METRICS_INTERVAL_SECONDS", "1"))
 HEARTBEAT_INTERVAL_SECONDS= float(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "0.5"))
 REGISTRATION_RETRY_SECONDS= float(os.environ.get("REGISTRATION_RETRY_SECONDS", "2"))
@@ -53,8 +55,10 @@ _latency_window: collections.deque[float] = collections.deque(maxlen=LATENCY_WIN
 _tokens_per_second: float = 0.0   # derived from Ollama response metadata
 _vram_used_gb: float = 0.0        # from Ollama /api/ps
 _vram_total_gb: float = 0.0       # from Ollama /api/ps
+_backend_available: bool = False
 _shutdown: bool = False
 _http_client: httpx.AsyncClient | None = None
+_ollama_semaphore: asyncio.Semaphore | None = None
 
 
 # ── GPU metrics ───────────────────────────────────────────────────────────────
@@ -71,7 +75,7 @@ async def _poll_gpu_metrics() -> None:
 
     if THUNDER_METRICS_URL:
         try:
-            r = await _http_client.get(THUNDER_METRICS_URL, timeout=5)
+            r = await _http_client.get(THUNDER_METRICS_URL)
             if r.status_code == 200:
                 gpus = r.json().get("gpus", [])
                 if gpus:
@@ -85,7 +89,7 @@ async def _poll_gpu_metrics() -> None:
 
     # fallback: Ollama /api/ps for VRAM
     try:
-        r = await _http_client.get(f"{OLLAMA_BASE_URL}/api/ps", timeout=5)
+        r = await _http_client.get(f"{OLLAMA_BASE_URL}/api/ps")
         if r.status_code == 200:
             models = r.json().get("models", [])
             if models:
@@ -109,6 +113,25 @@ def _parse_ollama_metadata(data: dict) -> None:
         _tokens_per_second = eval_count / (eval_duration / 1e9)
 
 
+async def _refresh_backend_readiness() -> None:
+    """Mark the worker schedulable only when Ollama serves the configured model."""
+    global _backend_available
+    try:
+        r = await _http_client.get(f"{OLLAMA_BASE_URL}/api/tags")
+        if r.status_code != 200:
+            if _active_tasks == 0:
+                _backend_available = False
+            return
+        models = r.json().get("models", [])
+        _backend_available = any(
+            model.get("name") == LLM_MODEL or model.get("model") == LLM_MODEL
+            for model in models
+        )
+    except Exception:
+        if _active_tasks == 0:
+            _backend_available = False
+
+
 # ── Registration, heartbeat, metrics ─────────────────────────────────────────
 async def _register() -> None:
     global ASSIGNED_WORKER_ID
@@ -116,6 +139,7 @@ async def _register() -> None:
         address=WORKER_ADDRESS,
         name=WORKER_NAME,
         model=LLM_MODEL,
+        backend_available=_backend_available,
     ).model_dump()
     while True:
         try:
@@ -146,6 +170,7 @@ async def _push_heartbeat() -> None:
                     vram_used_gb=_vram_used_gb,
                     vram_total_gb=_vram_total_gb,
                     gpu_temperature_c=_gpu_temperature_c,
+                    backend_available=_backend_available,
                     timestamp=time.time(),
                 ).model_dump(),
             )
@@ -162,6 +187,7 @@ async def _push_metrics() -> None:
         if ASSIGNED_WORKER_ID is None:
             await _register()
             continue
+        await _refresh_backend_readiness()
         await _poll_gpu_metrics()
         try:
             avg_lat = sum(_latency_window) / len(_latency_window) if _latency_window else 0.0
@@ -178,6 +204,7 @@ async def _push_metrics() -> None:
                     vram_used_gb=_vram_used_gb,
                     vram_total_gb=_vram_total_gb,
                     gpu_temperature_c=_gpu_temperature_c,
+                    backend_available=_backend_available,
                     timestamp=time.time(),
                 ).model_dump(),
             )
@@ -196,15 +223,23 @@ async def _push_metrics() -> None:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _http_client, _shutdown
+    global _http_client, _ollama_semaphore, _shutdown
     _shutdown = False
-    _http_client = httpx.AsyncClient(timeout=120.0, verify=OLLAMA_SSL_VERIFY)
+    _http_client = httpx.AsyncClient(timeout=None, verify=OLLAMA_SSL_VERIFY)
+    _ollama_semaphore = asyncio.Semaphore(OLLAMA_MAX_CONCURRENT_REQUESTS)
 
+    await _refresh_backend_readiness()
     await _register()
     heartbeat_task = asyncio.create_task(_push_heartbeat())
     metrics_task   = asyncio.create_task(_push_metrics())
 
-    logger.info("[worker] %s ready on port %d → ollama=%s", ASSIGNED_WORKER_ID, WORKER_PORT, OLLAMA_BASE_URL)
+    logger.info(
+        "[worker] %s ready on port %d → ollama=%s max_concurrent=%d",
+        ASSIGNED_WORKER_ID,
+        WORKER_PORT,
+        OLLAMA_BASE_URL,
+        OLLAMA_MAX_CONCURRENT_REQUESTS,
+    )
     yield
 
     _shutdown = True
@@ -230,11 +265,16 @@ async def infer(body: InferRequest) -> InferResponse:
     _active_tasks += 1
     start = time.time()
     try:
-        r = await _http_client.post(
-            f"{OLLAMA_BASE_URL}/api/generate",
-            json={"model": body.model, "prompt": body.prompt, "stream": False},
-            timeout=120.0,
-        )
+        async with _ollama_semaphore:
+            r = await _http_client.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": body.model,
+                    "prompt": body.prompt,
+                    "stream": False,
+                    "options": {"num_predict": OLLAMA_MAX_OUTPUT_TOKENS},
+                },
+            )
         r.raise_for_status()
         data = r.json()
         answer: str = data.get("response", "")
@@ -263,6 +303,7 @@ async def health():
         "ollama": OLLAMA_BASE_URL,
         "active_tasks": _active_tasks,
         "completed_tasks": _completed_tasks,
+        "backend_available": _backend_available,
         "tokens_per_second": round(_tokens_per_second, 1),
         "vram_used_gb": round(_vram_used_gb, 2),
     }

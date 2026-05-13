@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fire N requests simultaneously and print a results summary.
+Fire N requests simultaneously and print detailed per-request output plus a summary.
 
 Usage:
   python3 scripts/load_test.py
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import statistics
 import time
 from collections import defaultdict
@@ -20,59 +21,87 @@ from pathlib import Path
 
 import httpx
 
-MASTER_URL = "http://localhost"
+from common import QUERIES
 
-QUERIES = [
-    "What is distributed computing?",
-    "Explain fault tolerance in distributed systems.",
-    "What is the CAP theorem?",
-    "How does consensus work in distributed systems?",
-    "What is load balancing?",
-    "Explain horizontal vs vertical scaling.",
-    "What is a message queue?",
-    "How do distributed databases handle replication?",
-    "What is eventual consistency?",
-    "Explain sharding in distributed databases.",
-]
+MASTER_URL = os.environ.get("COORDINATOR_URL", "http://localhost")
+ANSWER_CHARS = int(os.environ.get("ANSWER_CHARS", "300"))
+SLOWEST_REQUESTS = int(os.environ.get("SLOWEST_REQUESTS", "5"))
+
+
+def percentile(sorted_values: list[float], pct: float) -> float:
+    if not sorted_values:
+        return 0.0
+    index = min(int(len(sorted_values) * pct), len(sorted_values) - 1)
+    return sorted_values[index]
+
+
+def _answer_preview(answer: str) -> str:
+    if ANSWER_CHARS <= 0 or len(answer) <= ANSWER_CHARS:
+        return answer
+    return f"{answer[:ANSWER_CHARS]}..."
+
+
+def print_request_details(idx: int, query: str, data: dict, elapsed_ms: float) -> None:
+    sources = data.get("rag_sources") or []
+    print(f"  [{idx:4d}] OK")
+    print(f"         request_id={data.get('request_id', '?')}")
+    print(f"         worker={data.get('worker_id', '?')} latency={elapsed_ms/1000:.2f}s retries={data.get('retry_count', 0)}")
+    print(f"         rag={'yes' if data.get('rag_used') else 'no'} context={data.get('rag_context_chars', 0)} chars sources={', '.join(sources) if sources else 'none'}")
+    print(f"         Q: {query}")
+    print(f"         A: {_answer_preview(data.get('answer', ''))}")
+    print()
 
 
 async def send(client: httpx.AsyncClient, idx: int, query: str) -> dict:
     start = time.monotonic()
     try:
-        r = await client.post(f"{MASTER_URL}/query", json={"query": query}, timeout=180)
+        r = await client.post(f"{MASTER_URL}/query", json={"query": query})
         elapsed = (time.monotonic() - start) * 1000
         if r.status_code == 200:
             d = r.json()
-            print(f"  [{idx:4d}] OK     worker={d.get('worker_id','?')[:8]}  lat={elapsed/1000:.2f}s  retries={d.get('retry_count',0)}")
-            return {"ok": True, "worker_id": d.get("worker_id", "?"), "latency_ms": elapsed, "retry_count": d.get("retry_count", 0)}
+            print_request_details(idx, query, d, elapsed)
+            return {
+                "ok": True,
+                "request_id": d.get("request_id"),
+                "query": query,
+                "answer": d.get("answer", ""),
+                "worker_id": d.get("worker_id", "?"),
+                "latency_ms": elapsed,
+                "retry_count": d.get("retry_count", 0),
+                "rag_used": d.get("rag_used", False),
+                "rag_context_chars": d.get("rag_context_chars", 0),
+                "rag_sources": d.get("rag_sources", []),
+            }
         print(f"  [{idx:4d}] ERR    status={r.status_code}  lat={elapsed/1000:.2f}s")
-        return {"ok": False, "latency_ms": elapsed, "status": r.status_code}
+        return {"ok": False, "query": query, "latency_ms": elapsed, "status": r.status_code}
     except Exception as e:
         elapsed = (time.monotonic() - start) * 1000
         print(f"  [{idx:4d}] FAIL   {e}")
-        return {"ok": False, "latency_ms": elapsed, "error": str(e)}
+        return {"ok": False, "query": query, "latency_ms": elapsed, "error": str(e)}
 
 
 async def main(total: int, strategy: str | None, out_dir: str | None, label: str | None) -> None:
     started_at = datetime.now(timezone.utc).isoformat()
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=None) as client:
         if strategy:
-            await client.post(f"{MASTER_URL}/config/strategy", json={"strategy": strategy}, timeout=5)
+            await client.post(f"{MASTER_URL}/config/strategy", json={"strategy": strategy})
             print(f"Strategy set to: {strategy}")
 
-        r = await client.get(f"{MASTER_URL}/health", timeout=5)
+        r = await client.get(f"{MASTER_URL}/health")
         health = r.json()
         active_strategy = strategy
         if not active_strategy:
             try:
-                rs = await client.get(f"{MASTER_URL}/config/strategy", timeout=5)
+                rs = await client.get(f"{MASTER_URL}/config/strategy")
                 active_strategy = rs.json().get("strategy")
             except Exception:
                 pass
 
         print(f"\nCluster: {health['healthy_workers']} healthy workers")
-        print(f"Firing {total} requests simultaneously...\n")
+        print(f"Total requests: {total}")
+        print(f"Actual simultaneous requests: {total}")
+        print("Concurrency mode: all requests launched at once\n")
 
         start = time.monotonic()
         results = await asyncio.gather(*[
@@ -81,46 +110,100 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
         ])
         wall = time.monotonic() - start
 
-    ok   = [r for r in results if r.get("ok")]
+    ok = [r for r in results if r.get("ok")]
     fail = [r for r in results if not r.get("ok")]
     lats = sorted(r["latency_ms"] for r in ok)
     n = len(lats)
 
     worker_counts: dict[str, int] = defaultdict(int)
+    worker_latencies: dict[str, list[float]] = defaultdict(list)
+    worker_retries: dict[str, int] = defaultdict(int)
+    worker_rag_used: dict[str, int] = defaultdict(int)
+    source_counts: dict[str, int] = defaultdict(int)
     for r in ok:
-        worker_counts[r["worker_id"][:8]] += 1
+        worker_id = r["worker_id"][:8]
+        worker_counts[worker_id] += 1
+        worker_latencies[worker_id].append(r["latency_ms"])
+        worker_retries[worker_id] += r.get("retry_count", 0)
+        if r.get("rag_used"):
+            worker_rag_used[worker_id] += 1
+        for source in r.get("rag_sources", []):
+            source_counts[source] += 1
+
+    total_retries = sum(r.get("retry_count", 0) for r in ok)
+    retried_requests = sum(1 for r in ok if r.get("retry_count", 0) > 0)
+    rag_count = sum(1 for r in ok if r.get("rag_used"))
+    rag_context_sizes = [r.get("rag_context_chars", 0) for r in ok]
+    slowest = sorted(ok, key=lambda r: r["latency_ms"], reverse=True)[:SLOWEST_REQUESTS]
 
     print(f"\n{'='*55}")
-    print(f"  RESULTS")
+    print("  DETAILED RESULTS")
     print(f"{'='*55}")
     print(f"  Run timestamp  : {started_at[:19].replace('T', ' ')}")
     print(f"  Total requests : {total}")
+    print(f"  Actual concurrent requests : {total}")
+    print("  Concurrency mode           : all requests launched at once")
     print(f"  Strategy       : {active_strategy or 'current'}")
     print(f"  Successful     : {len(ok)}")
     print(f"  Failed         : {len(fail)}")
     print(f"  Success rate   : {len(ok)/total*100:.1f}%")
     print(f"  Throughput     : {total/wall:.2f} req/s")
     print(f"  Wall time      : {wall:.1f}s")
+    print(f"  Total retries  : {total_retries}")
+    print(f"  Retried reqs   : {retried_requests}")
     if n:
-        print(f"\n  Latency")
+        print("\n  Latency")
         print(f"    mean  : {statistics.mean(lats)/1000:.2f}s")
         print(f"    p50   : {statistics.median(lats)/1000:.2f}s")
-        print(f"    p95   : {lats[int(n*0.95)]/1000:.2f}s")
-        print(f"    p99   : {lats[min(int(n*0.99),n-1)]/1000:.2f}s")
+        print(f"    p90   : {percentile(lats, 0.90)/1000:.2f}s")
+        print(f"    p95   : {percentile(lats, 0.95)/1000:.2f}s")
+        print(f"    p99   : {percentile(lats, 0.99)/1000:.2f}s")
         print(f"    min   : {lats[0]/1000:.2f}s")
         print(f"    max   : {lats[-1]/1000:.2f}s")
     if worker_counts:
-        print(f"\n  Worker distribution")
+        print("\n  Worker distribution")
         for wid, count in sorted(worker_counts.items(), key=lambda x: -x[1]):
-            print(f"    {wid} : {count}")
+            wlats = sorted(worker_latencies[wid])
+            avg = statistics.mean(wlats) / 1000 if wlats else 0.0
+            p95 = percentile(wlats, 0.95) / 1000 if wlats else 0.0
+            share = count / len(ok) * 100 if ok else 0.0
+            print(
+                f"    {wid} : {count} reqs ({share:.1f}%) "
+                f"avg={avg:.2f}s p95={p95:.2f}s "
+                f"retries={worker_retries[wid]} rag={worker_rag_used[wid]}"
+            )
+    print("\n  RAG")
+    print(f"    used          : {rag_count}/{len(ok)} successful requests")
+    if rag_context_sizes:
+        print(f"    avg context   : {statistics.mean(rag_context_sizes)/1000:.1f}k chars")
+        print(f"    min context   : {min(rag_context_sizes)} chars")
+        print(f"    max context   : {max(rag_context_sizes)} chars")
+    else:
+        print("    avg context   : 0.0k chars")
+    if source_counts:
+        print("    top sources")
+        for source, count in sorted(source_counts.items(), key=lambda x: -x[1])[:10]:
+            print(f"      {source} : {count}")
+    if slowest:
+        print("\n  Slowest requests")
+        for r in slowest:
+            print(
+                f"    {r['latency_ms']/1000:.2f}s worker={r.get('worker_id', '?')[:8]} "
+                f"retries={r.get('retry_count', 0)} rag={'yes' if r.get('rag_used') else 'no'} "
+                f"query={r.get('query', '')[:80]}"
+            )
     if fail:
-        print(f"\n  Failures")
+        print("\n  Failures")
         by_err: dict[str, int] = {}
         for r in fail:
             key = f"HTTP {r.get('status','?')}" if "status" in r else r.get("error", "unknown")[:60]
             by_err[key] = by_err.get(key, 0) + 1
         for err, count in sorted(by_err.items(), key=lambda x: -x[1]):
             print(f"    [{count}x] {err}")
+        print("\n  Failed request details")
+        for r in fail[:10]:
+            detail = f"HTTP {r.get('status')}" if "status" in r else r.get("error", "unknown")
+            print(f"    {detail} lat={r['latency_ms']/1000:.2f}s query={r.get('query', '')[:80]}")
     print(f"{'='*55}\n")
 
     if out_dir:
@@ -133,7 +216,9 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "duration_seconds": round(wall, 3),
-            "concurrent_users": total,
+            "reported_users": total,
+            "actual_simultaneous_requests": total,
+            "concurrency_mode": "all_requests_launched_simultaneously",
             "total_requests": total,
             "successful_requests": len(ok),
             "failed_requests": len(fail),
@@ -142,12 +227,30 @@ async def main(total: int, strategy: str | None, out_dir: str | None, label: str
             "min_latency_ms": round(lats[0], 2) if lats else 0.0,
             "max_latency_ms": round(lats[-1], 2) if lats else 0.0,
             "p50_latency_ms": round(statistics.median(lats), 2) if lats else 0.0,
-            "p95_latency_ms": round(lats[int(n * 0.95)], 2) if lats else 0.0,
-            "p99_latency_ms": round(lats[min(int(n * 0.99), n - 1)], 2) if lats else 0.0,
+            "p90_latency_ms": round(percentile(lats, 0.90), 2) if lats else 0.0,
+            "p95_latency_ms": round(percentile(lats, 0.95), 2) if lats else 0.0,
+            "p99_latency_ms": round(percentile(lats, 0.99), 2) if lats else 0.0,
+            "total_retries": total_retries,
+            "retried_requests": retried_requests,
             "worker_distribution": dict(worker_counts),
+            "worker_retry_totals": dict(worker_retries),
+            "rag_source_counts": dict(source_counts),
+            "rag_used_requests": rag_count,
+            "avg_rag_context_chars": round(
+                statistics.mean(rag_context_sizes), 2
+            ) if ok else 0.0,
             "failure_statuses": sorted({r.get("status", 0) for r in fail}),
-            "requests_file": str(out / f"{run_label}_requests.jsonl"),
-            "errors_file": str(out / f"{run_label}_errors.jsonl"),
+            "slowest_requests": [
+                {
+                    "request_id": r.get("request_id"),
+                    "query": r.get("query"),
+                    "worker_id": r.get("worker_id"),
+                    "latency_ms": round(r.get("latency_ms", 0.0), 2),
+                    "retry_count": r.get("retry_count", 0),
+                    "rag_used": r.get("rag_used", False),
+                }
+                for r in slowest
+            ],
         }
         summary_path = out / f"{run_label}_summary.json"
         summary_path.write_text(json.dumps(summary, indent=2) + "\n")

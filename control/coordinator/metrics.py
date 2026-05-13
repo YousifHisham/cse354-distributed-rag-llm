@@ -4,7 +4,7 @@ Central Prometheus metrics registry for the coordinator.
 All metrics are defined here and imported wherever they need to be updated.
 The /prometheus endpoint in main.py serves the generated text.
 """
-from prometheus_client import Counter, Gauge, Histogram, CollectorRegistry, REGISTRY
+from prometheus_client import Counter, Gauge, Histogram
 
 # ── Request metrics ───────────────────────────────────────────────────────────
 
@@ -90,7 +90,13 @@ worker_failed_tasks = Gauge(
 
 worker_status = Gauge(
     "worker_status",
-    "Worker health status: 1 = healthy, 0 = unavailable",
+    "Worker schedulable status: 1 = process healthy and backend available, 0 = unavailable",
+    ["worker_id"],
+)
+
+worker_ollama_available = Gauge(
+    "worker_ollama_available",
+    "Whether the worker can reach its configured Ollama model: 1 = available, 0 = unavailable",
     ["worker_id"],
 )
 

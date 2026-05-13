@@ -4,9 +4,6 @@ x-worker: &worker
   build:
     context: ./worker
     dockerfile: Dockerfile
-  depends_on:
-    control:
-      condition: service_healthy
   restart: unless-stopped
   networks:
     - llmnet
@@ -15,12 +12,14 @@ x-worker-env: &worker-env
   WORKER_PORT: "8001"
   COORDINATOR_URL: http://control:8000
   LLM_MODEL: ${LLM_MODEL:-llama3.1:8b}
+  OLLAMA_MAX_OUTPUT_TOKENS: ${OLLAMA_MAX_OUTPUT_TOKENS:-300}
   OLLAMA_SSL_VERIFY: "false"
   HEARTBEAT_INTERVAL_SECONDS: "0.5"
   METRICS_INTERVAL_SECONDS: "1"
   REGISTRATION_RETRY_SECONDS: "2"
   LATENCY_WINDOW: "20"
   MAX_TOKENS_PER_SECOND: "80"
+  OLLAMA_MAX_CONCURRENT_REQUESTS: ${OLLAMA_MAX_CONCURRENT_REQUESTS:-4}
 
 services:
 
@@ -52,7 +51,13 @@ services:
     ports:
       - "80:80"
       - "8000:8000"
+    volumes:
+      - chroma-onnx-cache:/root/.cache/chroma
     env_file: .env
+    environment:
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-0.5}
+      WORKER_MISSED_HEARTBEATS: ${WORKER_MISSED_HEARTBEATS:-6}
+      NGINX_PROXY_READ_TIMEOUT: ${NGINX_PROXY_READ_TIMEOUT:-86400}
     depends_on:
       chroma:
         condition: service_healthy
@@ -60,7 +65,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 60
+      start_period: 5m
     restart: unless-stopped
     networks:
       - llmnet
@@ -163,12 +169,10 @@ services:
   client:
     profiles: [client]
     build:
-      context: ./client
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: client/Dockerfile
     environment:
       COORDINATOR_URL: http://control:80
-      NUM_REQUESTS: ${NUM_REQUESTS:-20}
-      TIMEOUT: ${TIMEOUT:-180}
     depends_on:
       control:
         condition: service_healthy
@@ -182,4 +186,5 @@ networks:
 
 volumes:
   chroma-data:
+  chroma-onnx-cache:
   grafana-data:
