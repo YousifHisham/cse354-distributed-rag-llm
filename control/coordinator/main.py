@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response as FastAPIResponse
+from httpx import Limits
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 
@@ -135,7 +136,13 @@ async def lifespan(app: FastAPI):
     global _http_client, _scheduler_task
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, retriever.load)
-    _http_client = httpx.AsyncClient(timeout=None)
+    _http_client = httpx.AsyncClient(
+        timeout=None,
+        limits=Limits(
+            max_connections=1000,
+            max_keepalive_connections=100
+        )
+    )
     staleness_task = asyncio.create_task(_staleness_checker())
     _scheduler_task = asyncio.create_task(_scheduler_loop())
     logger.info(

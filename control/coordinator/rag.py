@@ -116,22 +116,35 @@ class ChromaRetriever:
         results = self._collection.query(
             query_texts=[query],
             n_results=max(1, top_k),
-            include=["documents", "metadatas"],
+            include=["documents", "metadatas", "distances"],
         )
 
         passages = results.get("documents", [[]])[0]
         metadatas = results.get("metadatas", [[]])[0]
-        sources: list[str] = []
-        for metadata in metadatas:
+        distances = results.get("distances", [[]])[0]
+
+        similarity_threshold = 0.5
+        filtered_passages: list[str] = []
+        filtered_sources: list[str] = []
+
+        for passage, metadata, distance in zip(passages, metadatas, distances):
+            if distance > similarity_threshold:
+                continue
+
             source = metadata.get("source") if isinstance(metadata, dict) else None
             chunk_index = metadata.get("chunk_index") if isinstance(metadata, dict) else None
             if source is None:
                 continue
-            label = f"{source}#{chunk_index}" if chunk_index is not None else str(source)
-            if label not in sources:
-                sources.append(label)
 
-        return RagResult(context="\n\n---\n\n".join(passages), sources=sources)
+            filtered_passages.append(passage)
+            label = f"{source}#{chunk_index}" if chunk_index is not None else str(source)
+            if label not in filtered_sources:
+                filtered_sources.append(label)
+
+        if not filtered_passages:
+            return RagResult(context="", sources=[])
+
+        return RagResult(context="\n\n---\n\n".join(filtered_passages), sources=filtered_sources)
 
 
 def _chunk_text(text: str, max_chars: int = 1200) -> Iterable[str]:
